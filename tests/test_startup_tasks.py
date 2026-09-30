@@ -28,14 +28,20 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WRAPPER = PROJECT_ROOT / "deploy" / "start_caddy_task.ps1"
 
-FAKE_CADDY = r"""@echo off
+FAKE_CADDY_RECORD = r"""@echo off
 > "%~dp0caddy-called.txt" echo ARGS=%*
+>> "%~dp0caddy-called.txt" echo CWD=%CD%
 >> "%~dp0caddy-called.txt" echo SITE_ADDRESS=%SITE_ADDRESS%
 >> "%~dp0caddy-called.txt" echo FRONTEND_DIST=%FRONTEND_DIST%
 >> "%~dp0caddy-called.txt" echo CADDY_ADMIN=%CADDY_ADMIN%
 >> "%~dp0caddy-called.txt" echo CADDY_LOG_DIR=%CADDY_LOG_DIR%
-exit /b 0
 """
+FAKE_CADDY = FAKE_CADDY_RECORD + "exit /b 0\n"                                   # exits at once
+FAKE_CADDY_RUNNING = FAKE_CADDY_RECORD + "ping -n 7 127.0.0.1 >nul\nexit /b 0\n"   # stays up ~6 s, like a server
+FAKE_CADDY_PORT_IN_USE = FAKE_CADDY_RECORD + (                                    # dies at startup, like Caddy does
+    "echo Error: loading initial config: listen tcp :8080: bind: Only one usage of each socket address "
+    "is normally permitted. 1>&2\nexit /b 1\n")
+SYSTEM32 = Path(r"C:\Windows\System32")
 
 
 class FakeHealth:
@@ -91,13 +97,14 @@ class CaddyStartupTaskTests(unittest.TestCase):
                                  f"FRONTEND_DIST={self.dist}\nCADDY_LOG_DIR={self.dir / 'caddy-logs'}\n",
                                  encoding="utf-8-sig")
 
-    def run_wrapper(self, health_url: str | None, wait_seconds: int = 30) -> subprocess.CompletedProcess:
+    def run_wrapper(self, health_url: str | None, wait_seconds: int = 30, cwd: Path = PROJECT_ROOT,
+                    caddy: Path | None = None) -> subprocess.CompletedProcess:
         args = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(WRAPPER),
-                "-CaddyExe", str(self.caddy), "-EnvFile", str(self.env_file), "-LogDir", str(self.logs),
+                "-CaddyExe", str(caddy or self.caddy), "-EnvFile", str(self.env_file), "-LogDir", str(self.logs),
                 "-WaitSeconds", str(wait_seconds)]
         if health_url:
             args += ["-HealthUrl", health_url]
-        return subprocess.run(args, capture_output=True, text=True, cwd=PROJECT_ROOT, timeout=wait_seconds + 60)
+        return subprocess.run(args, capture_output=True, text=True, cwd=cwd, timeout=wait_seconds + 60)
 
     def task_log(self) -> str:
         logs = sorted(self.logs.glob("caddy-*.task.log"))
@@ -176,6 +183,47 @@ class CaddyStartupTaskTests(unittest.TestCase):
     def test_default_health_url_is_the_api_endpoint(self):
         default = re.search(r'\[string\]\s*\$HealthUrl\s*=\s*"([^"]+)"', WRAPPER.read_text(encoding="utf-8")).group(1)
         self.assertEqual(default, "http://127.0.0.1:8000/api/v1/health")
+
+    # --- independent of the task's working directory; the Caddy result is logged ----------------------
+    def test_launches_with_the_absolute_caddyfile_from_any_working_directory(self):
+        """Scheduled tasks may start in C:\\Windows\\System32: the wrapper must not depend on it."""
+        with FakeHealth((200, {"status": "degraded"})) as health:
+            result = self.run_wrapper(health.url, cwd=SYSTEM32)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assert_caddy_started_with_the_env_file()
+        call = self.caddy_call()
+        caddyfile = str(PROJECT_ROOT / "deploy" / "Caddyfile")
+        self.assertIn(f'--config "{caddyfile}"', call["ARGS"])        # absolute, quoted (the path has spaces)
+        self.assertEqual(call["CWD"].strip(), str(PROJECT_ROOT))       # Caddy runs in the project root, not System32
+        self.assertIn(f'--config "{caddyfile}" (working directory {PROJECT_ROOT})', self.task_log())
+
+    def test_caddy_that_stays_up_is_confirmed_running(self):
+        self.caddy.write_text(FAKE_CADDY_RUNNING, encoding="ascii")
+        with FakeHealth((200, {"status": "degraded"})) as health:
+            result = self.run_wrapper(health.url, cwd=SYSTEM32)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        log = self.task_log()
+        self.assertRegex(log, r"Caddy running \(pid \d+\); serving http://localhost:8080")
+        self.assertLess(log.index("Caddy running"), log.index("Caddy exited with code 0"))
+
+    def test_caddy_failing_at_startup_is_logged_with_its_error_and_exit_code(self):
+        self.caddy.write_text(FAKE_CADDY_PORT_IN_USE, encoding="ascii")
+        with FakeHealth((200, {"status": "degraded"})) as health:
+            result = self.run_wrapper(health.url, cwd=SYSTEM32)
+        self.assertEqual(result.returncode, 1)  # Task Scheduler sees the failure (and retries)
+        log = self.task_log()
+        self.assertIn("Caddy stopped during startup with exit code 1; last error output: "
+                      "Error: loading initial config: listen tcp :8080: bind:", log)
+        self.assertIn("Caddy exited with code 1", log)
+        self.assertNotIn("Caddy running", log)
+
+    def test_caddy_that_cannot_be_started_is_logged(self):
+        not_a_program = self.dir / "caddy.txt"
+        not_a_program.write_text("not an executable", encoding="ascii")
+        with FakeHealth((200, {"status": "degraded"})) as health:
+            result = self.run_wrapper(health.url, caddy=not_a_program)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Caddy could not be started:", self.task_log())
 
     # --- settings problems are logged immediately, without waiting ----------------------------------
     def test_missing_frontend_is_reported_without_waiting(self):

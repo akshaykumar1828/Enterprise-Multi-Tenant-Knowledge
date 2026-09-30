@@ -19,8 +19,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# Everything is resolved from this script's own location, never from the task's
+# working directory: the project root, and an absolute path to the Caddyfile.
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $Config) { $Config = Join-Path $root "deploy\Caddyfile" }
+$Config = [IO.Path]::GetFullPath($Config)
+$StartupGraceSeconds = 3
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 $log = Join-Path $LogDir ("caddy-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
 
@@ -75,10 +79,30 @@ while ($true) {
 }
 Write-TaskLog "API ready ($state); starting Caddy for $($settings['SITE_ADDRESS'])"
 
-# 2. Caddy (inherits the settings above from this process's environment).
-$process = Start-Process -FilePath $CaddyExe `
-    -ArgumentList @("run", "--config", "`"$Config`"", "--adapter", "caddyfile") `
-    -NoNewWindow -Wait -PassThru `
-    -RedirectStandardOutput "$log.out.log" -RedirectStandardError "$log.err.log"
+# 2. Caddy (inherits the settings above from this process's environment), with the
+# absolute Caddyfile and the project root as working directory. The log records the
+# launch, whether Caddy is still running after a few seconds (or why it stopped: the
+# last line of its error output), and its exit code.
+Write-TaskLog "launching $CaddyExe run --config `"$Config`" (working directory $root)"
+try {
+    $process = Start-Process -FilePath $CaddyExe -WorkingDirectory $root `
+        -ArgumentList @("run", "--config", "`"$Config`"", "--adapter", "caddyfile") `
+        -NoNewWindow -PassThru `
+        -RedirectStandardOutput "$log.out.log" -RedirectStandardError "$log.err.log"
+    $null = $process.Handle  # keep the handle, so the exit code is available later
+} catch {
+    Write-TaskLog "Caddy could not be started: $($_.Exception.Message)"
+    exit 1
+}
+function Get-LastCaddyError {
+    $lines = @(Get-Content -LiteralPath "$log.err.log" -ErrorAction SilentlyContinue | Where-Object { $_.Trim() })
+    if ($lines) { $lines[-1] } else { "(no error output)" }
+}
+if ($process.WaitForExit($StartupGraceSeconds * 1000)) {
+    Write-TaskLog "Caddy stopped during startup with exit code $($process.ExitCode); last error output: $(Get-LastCaddyError)"
+} else {
+    Write-TaskLog "Caddy running (pid $($process.Id)); serving $($settings['SITE_ADDRESS'])"
+    $process.WaitForExit()
+}
 Write-TaskLog "Caddy exited with code $($process.ExitCode)"
 exit $process.ExitCode
