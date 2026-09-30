@@ -118,7 +118,12 @@ def configure_logging() -> None:
 
     if _production():
         # Route uvicorn's own messages through the same (JSON) handler.
-        for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        for name in ("uvicorn", "uvicorn.error"):
             uvicorn_logger = logging.getLogger(name)
             uvicorn_logger.handlers.clear()
             uvicorn_logger.propagate = True
+        # uvicorn's access log stays off (run_api.ps1 --no-access-log): the app writes
+        # its own request line with the request id and without the query string.
+        access = logging.getLogger("uvicorn.access")
+        access.handlers.clear()
+        access.propagate = False

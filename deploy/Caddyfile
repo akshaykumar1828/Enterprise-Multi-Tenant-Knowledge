@@ -8,9 +8,17 @@
 #                  local certificate authority, for trying the setup locally.
 #   FRONTEND_DIST  absolute path to frontend/dist (the output of "npm run build")
 #   CADDY_LOG_DIR  folder for access logs (default: ./logs)
+#   CADDY_ADMIN    Caddy's own admin API (config reload, "caddy stop"), loopback only.
+#                  Default localhost:2019; if Caddy fails with "listen tcp
+#                  127.0.0.1:2019 ... forbidden by its access permissions" (Windows can
+#                  block that port), use another local port, e.g. localhost:2999.
 #
 # Check the file:  caddy validate --config deploy/Caddyfile
 # Run:             caddy run --config deploy/Caddyfile
+
+{
+	admin {$CADDY_ADMIN:localhost:2019}
+}
 
 {$SITE_ADDRESS:localhost} {
 	encode zstd gzip

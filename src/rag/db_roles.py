@@ -4,8 +4,11 @@ The API connects as an "app" role that can only read and write rows in the
 application tables. Schema changes (ensure_schema) and operator tools keep
 using the owner role from PGUSER/PGPASSWORD.
 
-The app role cannot create, alter, drop or truncate tables, is not a
-superuser, and owns nothing.
+The app role cannot create, alter, drop or truncate tables, cannot create
+temporary tables, is not a superuser, and owns nothing. Its privileges, in full:
+CONNECT on the application database; USAGE on schema public; SELECT, INSERT,
+UPDATE, DELETE on the application tables (APP_TABLES); USAGE, SELECT on their
+sequences. PUBLIC keeps no privileges on the application database.
 
 Run as the owner (credentials from .env), once per database:
     .venv\\Scripts\\python.exe -m src.rag.db_roles create-app-role --role rag_app
@@ -53,6 +56,10 @@ def grant_app_privileges(conn: psycopg.Connection, role: str) -> None:
     database = sql.Identifier(conn.info.dbname)
     tables = sql.SQL(", ").join(sql.Identifier(t) for t in APP_TABLES)
     statements = [
+        # Nobody gets the database-level defaults PUBLIC would otherwise have (CONNECT,
+        # and TEMPORARY for temp tables, which the API never uses); only roles granted
+        # CONNECT explicitly can connect. The owner is unaffected.
+        sql.SQL("REVOKE ALL ON DATABASE {} FROM PUBLIC").format(database),
         sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(database, who),
         sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(who),
         sql.SQL("REVOKE CREATE ON SCHEMA public FROM {}").format(who),

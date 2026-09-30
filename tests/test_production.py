@@ -79,17 +79,18 @@ class AppRoleTests(unittest.TestCase):
             verify_least_privilege(conn)  # does not raise
             self.assertFalse(conn.execute("SELECT rolsuper FROM pg_roles WHERE rolname = current_user").fetchone()[0])
 
-    def test_app_role_can_read_and_write_rows(self):
+    # Writes and every forbidden action (DDL, escalation, server files/programs) are
+    # exercised in a scratch database only: tests/test_db_privileges.py. Here the
+    # role is only inspected (read-only) in the application database.
+    def test_app_role_can_read_rows_and_holds_row_privileges(self):
         with self.app_conn() as conn:
             self.assertGreater(conn.execute("SELECT count(*) FROM documents").fetchone()[0], 0)
-            with self.assertRaises(psycopg.errors.QueryCanceled):  # used only to force a rollback
-                with conn.transaction():
-                    tenant_id = conn.execute(
-                        "INSERT INTO tenants (slug, name) VALUES (%s, 'x') RETURNING id", (f"role-test-{secrets.token_hex(3)}",)
-                    ).fetchone()[0]
-                    conn.execute("UPDATE tenants SET name = 'y' WHERE id = %s", (tenant_id,))
-                    conn.execute("DELETE FROM tenants WHERE id = %s", (tenant_id,))
-                    raise psycopg.errors.QueryCanceled("rollback")
+            for table in ("tenants", "users", "documents", "document_chunks", "rate_limits"):
+                with self.subTest(table=table):
+                    self.assertEqual(conn.execute(
+                        "SELECT has_table_privilege(%(t)s, 'INSERT'), has_table_privilege(%(t)s, 'UPDATE'),"
+                        "       has_table_privilege(%(t)s, 'DELETE'), has_table_privilege(%(t)s, 'TRUNCATE')",
+                        {"t": table}).fetchone(), (True, True, True, False))
 
     def test_app_role_has_row_access_to_the_authorization_tables(self):
         with self.app_conn() as conn:
@@ -101,39 +102,12 @@ class AppRoleTests(unittest.TestCase):
                         "       has_table_privilege(%s, 'TRUNCATE')", (table,) * 5).fetchone(),
                         (True, True, True, True, False))
 
-    def test_app_role_cannot_change_schema_or_escalate(self):
-        forbidden = {
-            "create table": "CREATE TABLE role_test_table (id int)",
-            "drop table": "DROP TABLE documents",
-            "alter table": "ALTER TABLE documents ADD COLUMN evil text",
-            "truncate": "TRUNCATE document_chunks",
-            "create index": "CREATE INDEX role_test_idx ON documents (source)",
-            "create role": "CREATE ROLE role_test_escalation",
-            "read server files": "SELECT pg_read_file('postgresql.conf')",
-            "run programs": "COPY tenants FROM PROGRAM 'whoami'",
-        }
-        with self.app_conn() as conn:
-            for name, statement in forbidden.items():
-                with self.subTest(action=name):
-                    with self.assertRaises(psycopg.errors.InsufficientPrivilege):
-                        # Always rolled back: even if a statement unexpectedly succeeded,
-                        # nothing would persist.
-                        with conn.transaction(force_rollback=True):
-                            conn.execute(statement)
-            # Granting itself more only draws a server WARNING ("no privileges were
-            # granted"); what matters is that nothing was actually gained.
-            conn.execute("GRANT ALL ON documents TO CURRENT_USER")
-            gained = conn.execute(
-                "SELECT has_table_privilege('documents', 'TRUNCATE'), has_table_privilege('documents', 'REFERENCES'),"
-                "       has_table_privilege('documents', 'TRIGGER')").fetchone()
-            self.assertEqual(gained, (False, False, False))
-
     def test_owner_and_superuser_are_rejected_for_production(self):
         with connect() as owner:  # the development identity (superuser, owns the tables)
             with self.assertRaises(UnsafeDatabaseRole):
                 verify_least_privilege(owner)
         with mock.patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("APP_DB_USER", None)
+            os.environ["APP_DB_USER"] = ""  # "not set"; empty, so load_dotenv(.env) cannot fill it back in
             with self.assertRaises(UnsafeDatabaseRole):
                 check_production_database(connect_app)
 
@@ -141,7 +115,7 @@ class AppRoleTests(unittest.TestCase):
         # Configuration is validated before anything connects, so the missing
         # APP_DB_USER is reported as a configuration error.
         with mock.patch.dict(os.environ, {"APP_ENV": "production"}):
-            os.environ.pop("APP_DB_USER", None)
+            os.environ["APP_DB_USER"] = ""  # "not set"; empty, so load_dotenv(.env) cannot fill it back in
             with self.assertRaises(ProductionConfigError) as caught:
                 with TestClient(app):
                     pass
@@ -241,7 +215,7 @@ class DevelopmentModeTests(unittest.TestCase):
     def test_development_defaults(self):
         with mock.patch.dict(os.environ, {}):
             os.environ.pop("APP_ENV", None)
-            os.environ.pop("APP_DB_USER", None)
+            os.environ["APP_DB_USER"] = ""  # "not set"; empty, so load_dotenv(.env) cannot fill it back in
             with connect_app() as app_conn, connect() as owner_conn:
                 self.assertEqual(app_conn.execute("SELECT current_user").fetchone(),
                                  owner_conn.execute("SELECT current_user").fetchone())

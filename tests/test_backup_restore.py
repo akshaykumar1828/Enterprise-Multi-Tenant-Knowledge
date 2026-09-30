@@ -184,7 +184,9 @@ class BackupRestoreTests(unittest.TestCase):
     def test_application_works_on_the_restored_database(self):
         before_live = backup.fingerprint(self.conn)
         with mock.patch.dict(os.environ, {"PGDATABASE": self.scratch}):
-            os.environ.pop("APP_DB_USER", None)
+            # The owner identity (the restored copy has no role grants); empty, so the API's
+            # load_dotenv(.env) cannot fill APP_DB_USER back in.
+            os.environ["APP_DB_USER"] = ""
             with TestClient(app) as client:
                 with psycopg.connect() as probe:  # what the application now connects to
                     self.assertEqual(probe.execute("SELECT current_database()").fetchone()[0], self.scratch)

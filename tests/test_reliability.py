@@ -21,7 +21,7 @@ import psycopg
 from fastapi.testclient import TestClient
 
 from src.api import main as api_main
-from src.api.logging_setup import JsonFormatter, redact, request_id_from
+from src.api.logging_setup import JsonFormatter, configure_logging, redact, request_id_from
 from src.api.settings import ProductionConfigError, jwt_secret_problems, validate_production_settings
 from src.rag import db
 from src.rag.db import app_connection_kwargs, connect
@@ -226,7 +226,7 @@ class ProductionValidationTests(unittest.TestCase):
         bad_secret = "change-me-change-me-change-me-change-me-change-me"
         with mock.patch.dict(os.environ, {"APP_ENV": "production", "JWT_SECRET_KEY": bad_secret,
                                           "ACCESS_TOKEN_EXPIRE_MINUTES": "100000", "DB_POOL_MAX_SIZE": "0"}):
-            os.environ.pop("APP_DB_USER", None)
+            os.environ["APP_DB_USER"] = ""  # "not set"; empty, so load_dotenv(.env) cannot fill it back in
             with self.assertRaises(ProductionConfigError) as caught:
                 validate_production_settings()
         message = str(caught.exception)
@@ -263,6 +263,30 @@ class LoggingUnitTests(unittest.TestCase):
         text = redact(f"Authorization: Bearer {jwt_like} key=AIza{'x' * 30} password=hunter2 api_key: abc123")
         for secret in (jwt_like, "AIza" + "x" * 30, "hunter2", "abc123"):
             self.assertNotIn(secret, text)
+
+    def test_production_logging_keeps_uvicorns_access_log_off(self):
+        """--no-access-log must stay effective: the app's own request line (with request id,
+        without the query string) is the only access log in production."""
+        names = ("uvicorn", "uvicorn.error", "uvicorn.access")
+        saved = {n: (list(logging.getLogger(n).handlers), logging.getLogger(n).propagate) for n in names}
+        root_handlers = list(logging.getLogger().handlers)
+        try:
+            with mock.patch.dict(os.environ, {"APP_ENV": "production"}):
+                configure_logging()
+            self.assertFalse(logging.getLogger("uvicorn.access").propagate)
+            self.assertEqual(logging.getLogger("uvicorn.access").handlers, [])
+            self.assertTrue(logging.getLogger("uvicorn.error").propagate)
+            app_handler = next(h for h in logging.getLogger().handlers if h not in root_handlers)
+            with mock.patch.object(app_handler, "emit") as emit:
+                logging.getLogger("uvicorn.access").info('127.0.0.1:0 - "GET /api/v1/documents?limit=5 HTTP/1.1" 200')
+                emit.assert_not_called()
+                logging.getLogger("uvicorn.error").error("uvicorn error still reaches the app log")
+                emit.assert_called_once()
+        finally:
+            for name, (handlers, propagate) in saved.items():
+                logging.getLogger(name).handlers[:] = handlers
+                logging.getLogger(name).propagate = propagate
+            configure_logging()  # back to the development setup for the remaining tests
 
     def test_json_formatter_emits_one_json_object(self):
         record = logging.LogRecord("rag.test", logging.INFO, __file__, 1, "hello %s", ("world",), None)
