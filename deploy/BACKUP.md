@@ -109,3 +109,105 @@ as in DEPLOYMENT.md, and the models cached (or internet access once).
    ```
    Log in as an admin and ask a known question. Users keep their passwords (the hashes
    are in the dump).
+
+## 5. Scheduled backups (daily)
+
+A Windows scheduled task, `\EnterpriseRAG\RAG Backup`, runs the same backup as step 1 every
+day and keeps the most recent ones:
+
+| Setting | Default | Change with |
+|---|---|---|
+| Schedule | daily at **02:30**; if the machine was off then, as soon as it is on again | `-At HH:mm` |
+| Backup folder | `C:\rag-backups` (must be outside the project folder; copy it to another disk or machine regularly) | `-BackupDir` |
+| Retention | the newest **14** backups (two weeks of daily backups) | `-Keep N` |
+| Log | `C:\rag-logs\backup.log` (one line per step: `OK …` / `FAILED …`) | `-LogDir` |
+| Account | your Windows account, limited rights, no stored Windows password (S4U) | `-UserId`, `-LogonType Password` |
+
+Each run (`deploy\run_backup_task.ps1` → `python -m src.rag.backup_schedule`):
+
+1. writes `<database>-YYYYMMDD-HHMMSS.dump` (custom format, read-only `pg_dump`); an
+   existing file is never overwritten;
+2. checks the archive with `pg_restore --list` (it must contain every application table).
+   Only then is the backup counted; an unreadable archive is renamed to `….dump.invalid`
+   (kept for inspection, never counted, never deleted automatically) and the run fails;
+3. applies retention, only after a successful backup: among the files **directly in the
+   backup folder** whose names match `<database>-YYYYMMDD-HHMMSS.dump` exactly, the newest
+   `-Keep` stay and older ones are deleted. The backup just written is never deleted.
+   Nothing else is ever touched (other files, `.invalid` files, other databases' dumps,
+   subfolders). The log reports `retained=… removed=…`;
+4. exits with 0 (success), 1 (backup failed; nothing deleted) or 2 (backup made, retention
+   failed), which Task Scheduler shows as the task's *Last Run Result*.
+
+A full restore is **not** part of the daily run (it takes a scratch database and minutes);
+run the restore check yourself once a week and after every change to the setup (step 3):
+`.venv\Scripts\python.exe -m src.rag.backup verify --dump <newest dump>`.
+
+### Owner credentials without a password in the task
+
+`pg_dump` needs the database owner. Its password is kept in PostgreSQL's own password file,
+readable only by your account; the task passes only the file's path (`-PgPassFile`) and the
+owner's role name (`-DbUser`, default `postgres`). Create the file once (no admin needed;
+the password is typed into a hidden prompt and never shown):
+
+```powershell
+$pgpass = Join-Path $env:APPDATA "postgresql\pgpass.conf"
+New-Item -ItemType Directory -Force (Split-Path $pgpass) | Out-Null
+$pw = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+    [Runtime.InteropServices.Marshal]::SecureStringToBSTR((Read-Host "PostgreSQL owner password" -AsSecureString)))
+$pw = $pw -replace '\\', '\\' -replace ':', '\:'           # pgpass escaping for \ and :
+Set-Content -LiteralPath $pgpass -Value "localhost:5432:enterprise_rag:postgres:$pw" -Encoding ascii
+Remove-Variable pw
+icacls $pgpass /inheritance:r /grant:r "$($env:USERDOMAIN)\$($env:USERNAME):(R,W)"   # only you can read it
+```
+
+Check it works — in a **new** PowerShell window without `PGPASSWORD` set, one real run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\run_backup_task.ps1 -BackupDir C:\rag-backups -LogDir C:\rag-logs `
+    -PgPassFile "$env:APPDATA\postgresql\pgpass.conf"
+Get-Content C:\rag-logs\backup.log -Tail 2          # OK backup … / OK retention …
+```
+
+If you later change the owner's password, update this file too.
+
+### Register, check, remove (admin)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\register_backup_task.ps1 -WhatIf   # dry run: must end with "Checks: OK"
+powershell -ExecutionPolicy Bypass -File deploy\register_backup_task.ps1           # registers \EnterpriseRAG\RAG Backup
+Start-ScheduledTask -TaskPath "\EnterpriseRAG\" -TaskName "RAG Backup"             # one run now, to check
+```
+
+Verify:
+
+```powershell
+Get-ScheduledTaskInfo -TaskPath "\EnterpriseRAG\" -TaskName "RAG Backup" | Select-Object LastRunTime, LastTaskResult, NextRunTime
+# LastTaskResult 0 = success; 1 = backup failed; 2 = retention failed; 267009 = still running
+Get-Content C:\rag-logs\backup.log -Tail 4
+Get-ChildItem C:\rag-backups -Filter "enterprise_rag-*.dump" | Sort-Object Name | Select-Object -Last 3 Name, Length, LastWriteTime
+```
+
+Rollback (the task only; existing backups stay where they are):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File deploy\register_backup_task.ps1 -Unregister
+```
+
+### Troubleshooting
+
+| `backup.log` / symptom | Cause | Fix |
+|---|---|---|
+| `password file not found` | `-PgPassFile` path wrong or file missing | create it (above); re-register with the right `-PgPassFile` |
+| `pg_dump failed … no password supplied` or `password authentication failed` | password file missing its line, wrong password, or a `:`/`\` not escaped | recreate the file (above) |
+| `pg_dump failed … connection refused` / `could not connect` | PostgreSQL not running | `Get-Service postgresql-x64-18`; start it |
+| `archive rejected, kept for inspection as ….invalid` | the dump could not be read back (disk full, interrupted) | check free space on the backup disk; delete the `.invalid` file once understood |
+| `a file with this name already exists` | two runs in the same second | none needed; the next run gets a new name |
+| `FAILED retention` (exit 2) | a backup file could not be deleted (in use, permissions) | the new backup is fine; fix permissions on the backup folder |
+| no new line in `backup.log`, `LastTaskResult` not 0 | task could not start (account/logon type) | re-register with `-LogonType Password` |
+
+### Recovery from a scheduled backup
+
+Scheduled dumps are ordinary custom-format dumps, exactly like step 1: restore the newest
+one (or the newest from before a problem) with the recovery sequence in step 4, after
+checking it with `python -m src.rag.backup verify --dump <file>`. Files and secrets are not
+in the dump; back up `UPLOAD_DIR`, `data\documents` and `.env` as described above.

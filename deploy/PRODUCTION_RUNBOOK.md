@@ -25,6 +25,7 @@ $env:PGHOST = "localhost"; $env:PGUSER = "postgres"                # owner, for 
 | 4 | Production `.env` | no | yes |
 | 5 | Caddy installed, `caddy.env`, startup tasks (PostgreSQL → API → Caddy) | yes | yes |
 | 6 | HTTPS / public domain (last) | yes | yes |
+| 7 | Scheduled daily database backups | yes (registration) | yes |
 
 ## 0. Backup first
 
@@ -309,3 +310,36 @@ Checklist, in order:
 (`Get-NetFirewallRule -Group "Enterprise RAG" | Where-Object Action -eq Allow | Remove-NetFirewallRule`),
 remove the router forwards, and set `SITE_ADDRESS` back to `http://localhost:8080` and
 restart Caddy.
+
+## 7. Scheduled daily database backups (admin for registration)
+
+Details, troubleshooting and recovery: [BACKUP.md](BACKUP.md), section 5. Defaults: daily at
+02:30 (or as soon as the machine is on again), newest 14 backups kept in `C:\rag-backups`
+(outside the project; copy it to another disk or machine regularly), log in
+`C:\rag-logs\backup.log`. Only files named `enterprise_rag-YYYYMMDD-HHMMSS.dump` directly in
+that folder are ever deleted, and only after a new backup passed its archive check.
+
+1. **Owner password file** (no admin; hidden prompt; readable only by you) — the commands in
+   BACKUP.md, "Owner credentials without a password in the task".
+2. **One manual run** in a new window without `PGPASSWORD` set:
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File deploy\run_backup_task.ps1 -BackupDir C:\rag-backups -LogDir C:\rag-logs -PgPassFile "$env:APPDATA\postgresql\pgpass.conf"
+   Get-Content C:\rag-logs\backup.log -Tail 2                   # OK backup … / OK retention …
+   ```
+3. **Register** (admin):
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File deploy\register_backup_task.ps1 -WhatIf   # "Checks: OK"
+   powershell -ExecutionPolicy Bypass -File deploy\register_backup_task.ps1
+   Start-ScheduledTask -TaskPath "\EnterpriseRAG\" -TaskName "RAG Backup"
+   ```
+
+**Verify:**
+
+```powershell
+Get-ScheduledTaskInfo -TaskPath "\EnterpriseRAG\" -TaskName "RAG Backup" | Select-Object LastRunTime, LastTaskResult, NextRunTime   # LastTaskResult 0
+Get-Content C:\rag-logs\backup.log -Tail 2
+.venv\Scripts\python.exe -m src.rag.backup verify --dump (Get-ChildItem C:\rag-backups -Filter "enterprise_rag-*.dump" | Sort-Object Name | Select-Object -Last 1).FullName   # weekly: RESULT: OK
+```
+
+**Rollback:** `powershell -ExecutionPolicy Bypass -File deploy\register_backup_task.ps1 -Unregister`
+(existing backups are kept).
