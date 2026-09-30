@@ -12,6 +12,23 @@ export interface User {
   tenant: Tenant;
 }
 
+export type Role = "admin" | "employee";
+
+export interface DepartmentInfo {
+  id: number;
+  slug: string;
+  name: string;
+}
+
+/**
+ * GET /auth/me. Role and departments are read from the database on every request.
+ * The UI uses them only to decide what to show; the server enforces all access.
+ */
+export interface CurrentUser extends User {
+  role: Role;
+  departments: DepartmentInfo[];
+}
+
 export interface RegisterRequest {
   organization_name: string;
   email: string;
@@ -48,6 +65,39 @@ export interface DocumentList {
   limit: number;
   offset: number;
   items: KnowledgeDocument[];
+}
+
+// --- Admin API (/api/v1/admin) ---------------------------------------------------
+
+export interface Department extends DepartmentInfo {
+  member_count: number;
+  document_count: number;
+}
+
+export interface CompanyUser {
+  id: number;
+  email: string;
+  display_name: string | null;
+  role: Role;
+  department_ids: number[];
+  created_at: string;
+}
+
+export interface CompanyUserList {
+  total: number;
+  limit: number;
+  offset: number;
+  items: CompanyUser[];
+}
+
+export type Visibility = "company" | "departments";
+
+export interface DocumentAccess {
+  id: number;
+  filename: string;
+  origin: string;
+  visibility: Visibility;
+  department_ids: number[];
 }
 
 export interface SourceMetadata {

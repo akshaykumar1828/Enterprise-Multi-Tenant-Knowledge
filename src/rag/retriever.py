@@ -16,6 +16,7 @@ import numpy as np
 import psycopg
 from sentence_transformers import CrossEncoder, SentenceTransformer
 
+from .access import DOCUMENT_ACCESS_FILTER, AccessScope
 from .chunking import Chunk, embedding_input
 from .embeddings import embed_texts, hf_offline, pick_device
 
@@ -161,26 +162,63 @@ class InMemoryRetriever:
 
 
 class PgVectorRetriever:
-    """Search one tenant's chunks stored in PostgreSQL, limited to the given documents.
+    """Search the chunks a scope may read, stored in PostgreSQL.
 
-    tenant_id is required and every candidate query filters on it in SQL, so a
-    search can never return another tenant's chunks, whatever relative_paths
-    contains.
+    scope (an AccessScope) is required: every candidate query filters on its
+    tenant and on document access in SQL, before ORDER BY/LIMIT, so a search can
+    never select another tenant's chunks or documents the user may not read.
+
+    relative_paths=None searches every document the scope may read (the API).
+    A list of paths only narrows that further (CLI --document); it can never
+    add a document the scope does not already allow.
     """
 
     def __init__(
-        self, conn: psycopg.Connection, model: SentenceTransformer, relative_paths: list[str], *, tenant_id: int
+        self,
+        conn: psycopg.Connection,
+        model: SentenceTransformer,
+        relative_paths: list[str] | None = None,
+        *,
+        scope: AccessScope,
     ):
-        if not relative_paths:
+        if relative_paths is not None and not relative_paths:
             raise ValueError("Cannot search without any documents")
         self.conn = conn
         self.model = model
         self.relative_paths = relative_paths
-        self.tenant_id = tenant_id
+        self.scope = scope
+        self._single_document: bool | None = None
 
-    # Tenant filter shared by every candidate query. It is applied to both
-    # tables; the schema also guarantees they agree (composite foreign key).
-    TENANT_FILTER = "c.tenant_id = %(tenant_id)s AND d.tenant_id = %(tenant_id)s"
+    # Access filter shared by every candidate query: the chunk's tenant, and the
+    # document's tenant + visibility (see access.py). The schema also guarantees
+    # chunk and document tenants agree (composite foreign key).
+    ACCESS_FILTER = f"c.tenant_id = %(tenant_id)s AND {DOCUMENT_ACCESS_FILTER}"
+
+    def _filter(self) -> str:
+        """WHERE conditions for a candidate query; paths are an optional extra restriction."""
+        if self.relative_paths is None:
+            return self.ACCESS_FILTER
+        return f"{self.ACCESS_FILTER} AND d.relative_path = ANY(%(paths)s)"
+
+    def _params(self, **extra) -> dict:
+        params = {**self.scope.sql_params(), **extra}
+        if self.relative_paths is not None:
+            params["paths"] = self.relative_paths
+        return params
+
+    def accessible_documents(self, limit: int = 2) -> int:
+        """How many readable documents this search covers, counted up to `limit`."""
+        return self.conn.execute(
+            f"""
+            SELECT count(*) FROM (
+                SELECT 1 FROM documents d
+                WHERE {DOCUMENT_ACCESS_FILTER}
+                {"AND d.relative_path = ANY(%(paths)s)" if self.relative_paths is not None else ""}
+                LIMIT %(limit)s
+            ) readable
+            """,
+            self._params(limit=limit),
+        ).fetchone()[0]
 
     # Columns shared by every candidate query; <=> is pgvector's cosine
     # distance, so similarity = 1 - distance.
@@ -206,8 +244,14 @@ class PgVectorRetriever:
         ]
 
     def _max_per_document(self, top_k: int) -> int:
-        # Searching a single document (e.g. --document): nothing to diversify across.
-        return top_k if len(self.relative_paths) == 1 else MAX_CHUNKS_PER_DOCUMENT
+        # Searching a single document (e.g. --document, or a corpus of one readable
+        # document): nothing to diversify across.
+        if self._single_document is None:
+            if self.relative_paths is not None:
+                self._single_document = len(self.relative_paths) == 1
+            else:
+                self._single_document = self.accessible_documents(limit=2) == 1
+        return top_k if self._single_document else MAX_CHUNKS_PER_DOCUMENT
 
     def vector_candidates(self, query_vector: np.ndarray, limit: int) -> list[SearchResult]:
         rows = self.conn.execute(
@@ -215,12 +259,11 @@ class PgVectorRetriever:
             SELECT {self.RESULT_COLUMNS}
             FROM document_chunks c
             JOIN documents d ON d.id = c.document_id
-            WHERE {self.TENANT_FILTER}
-              AND d.relative_path = ANY(%(paths)s)
+            WHERE {self._filter()}
             ORDER BY c.embedding <=> %(query)s
             LIMIT %(limit)s
             """,
-            {"query": query_vector, "tenant_id": self.tenant_id, "paths": self.relative_paths, "limit": limit},
+            self._params(query=query_vector, limit=limit),
         ).fetchall()
         return self._to_results(rows)
 
@@ -242,13 +285,13 @@ class RerankingRetriever(PgVectorRetriever):
         self,
         conn: psycopg.Connection,
         model: SentenceTransformer,
-        relative_paths: list[str],
+        relative_paths: list[str] | None,
         reranker: CrossEncoder,
         candidates: int = RERANK_CANDIDATES,
         *,
-        tenant_id: int,
+        scope: AccessScope,
     ):
-        super().__init__(conn, model, relative_paths, tenant_id=tenant_id)
+        super().__init__(conn, model, relative_paths, scope=scope)
         self.reranker = reranker
         self.candidates = candidates
 
@@ -278,14 +321,12 @@ class HybridRetriever(PgVectorRetriever):
             SELECT {self.RESULT_COLUMNS}
             FROM document_chunks c
             JOIN documents d ON d.id = c.document_id, q
-            WHERE {self.TENANT_FILTER}
-              AND d.relative_path = ANY(%(paths)s)
+            WHERE {self._filter()}
               AND c.lexical_vector @@ q.query
             ORDER BY ts_rank(c.lexical_vector, q.query) DESC, c.id
             LIMIT %(limit)s
             """,
-            {"question": question, "query": query_vector, "tenant_id": self.tenant_id,
-             "paths": self.relative_paths, "limit": limit},
+            self._params(question=question, query=query_vector, limit=limit),
             # Never reuse a prepared plan here. Without the actual values the planner
             # guesses the path list and the OR-query match only a handful of rows and
             # picks a nested loop that re-scans the full-text index once per document

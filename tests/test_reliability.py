@@ -74,6 +74,17 @@ class ApiReliabilityTests(unittest.TestCase):
         with connect() as owner:
             self.assertEqual(owner.execute("SHOW statement_timeout").fetchone()[0], "0")
 
+    def test_api_connections_disable_parallel_query_workers(self):
+        with db.connect_app() as conn:  # from the pool
+            self.assertEqual(conn.execute("SHOW max_parallel_workers_per_gather").fetchone()[0], "0")
+        with psycopg.connect(**app_connection_kwargs()) as conn:  # short-lived API connection
+            self.assertEqual(conn.execute("SHOW max_parallel_workers_per_gather").fetchone()[0], "0")
+        # Operator connections keep the server's own setting: nothing is set by the client.
+        with connect() as owner:
+            source = owner.execute(
+                "SELECT source FROM pg_settings WHERE name = 'max_parallel_workers_per_gather'").fetchone()[0]
+            self.assertNotEqual(source, "client")
+
     def test_statement_timeout_cancels_slow_queries(self):
         with mock.patch.dict(os.environ, {"DB_STATEMENT_TIMEOUT_MS": "300"}):
             with psycopg.connect(**app_connection_kwargs()) as conn:

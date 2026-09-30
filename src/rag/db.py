@@ -16,6 +16,8 @@ Two identities:
 Every API connection has a connect timeout and a per-statement timeout:
   DB_POOL_MIN_SIZE (1)  DB_POOL_MAX_SIZE (10)  DB_POOL_TIMEOUT seconds to wait for a
   free connection (5)  DB_CONNECT_TIMEOUT seconds (5)  DB_STATEMENT_TIMEOUT_MS (15000)
+API connections also run without parallel query workers (max_parallel_workers_per_gather=0);
+operator connections (connect()) keep the server defaults.
 """
 
 import logging
@@ -71,7 +73,9 @@ def app_connection_kwargs() -> dict:
         "autocommit": True,
         "connect_timeout": settings["connect_timeout"],
         # Server-side limit per statement, so one slow query cannot hold a connection forever.
-        "options": f"-c statement_timeout={settings['statement_timeout_ms']}",
+        # No parallel query workers: on this Windows host starting a worker costs ~200 ms,
+        # far more than the retrieval queries themselves (a few ms to ~100 ms).
+        "options": f"-c statement_timeout={settings['statement_timeout_ms']} -c max_parallel_workers_per_gather=0",
     }
     if app_role_configured():
         kwargs["user"] = os.environ["APP_DB_USER"]

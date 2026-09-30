@@ -26,6 +26,7 @@ import psycopg
 from dotenv import load_dotenv
 from google.genai import errors as genai_errors
 
+from .access import AccessScope
 from .chunking import CHUNK_OVERLAP, CHUNK_SIZE, chunk_document
 from .citations import check_citations
 from .db import connect, ensure_schema
@@ -214,12 +215,14 @@ def main() -> int:
         if not args.retrieve_only:
             print(f"LLM:      {LLM_MODEL_NAME}")
 
+        # Operator tool: full access to the chosen tenant, narrowed to the listed documents.
+        scope = AccessScope.operator(tenant.id)
         if args.no_rerank:
-            retriever = PgVectorRetriever(conn, model, relative_paths, tenant_id=tenant.id)
+            retriever = PgVectorRetriever(conn, model, relative_paths, scope=scope)
             print("Retriever: vector search + diversification (--no-rerank)")
         else:
             reranker = load_reranker()
-            retriever = RerankingRetriever(conn, model, relative_paths, reranker, tenant_id=tenant.id)
+            retriever = RerankingRetriever(conn, model, relative_paths, reranker, scope=scope)
             print(f"Retriever: vector top-50 -> {RERANKER_MODEL} on {reranker.model.device} -> diversification")
         try:
             results = retriever.search(args.question, top_k=args.top_k)

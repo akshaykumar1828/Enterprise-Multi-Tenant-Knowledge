@@ -22,7 +22,7 @@ export function setUnauthorizedHandler(handler: (() => void) | null): void {
 }
 
 interface RequestOptions {
-  method?: "GET" | "POST" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   /** A JSON-serializable value, or FormData for file uploads. */
   body?: unknown;
   token?: string | null;

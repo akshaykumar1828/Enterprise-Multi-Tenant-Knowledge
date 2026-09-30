@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 from pgvector.psycopg import register_vector
 
 from src.api.main import app
+from src.rag.access import AccessScope
 from src.rag.chunking import chunk_document
 from src.rag.db import connect, ensure_schema
 from src.rag.embeddings import load_model
@@ -105,10 +106,14 @@ class TenantIsolationTests(unittest.TestCase):
     def test_every_retriever_returns_only_its_own_tenant(self):
         for key, other in (("a", "b"), ("b", "a")):
             tenant = self.tenants[key]
+            scope = AccessScope.operator(tenant.id)
             retrievers = {
-                "reranking": RerankingRetriever(self.conn, self.model, self.paths[key], self.reranker, tenant_id=tenant.id),
-                "vector": PgVectorRetriever(self.conn, self.model, self.paths[key], tenant_id=tenant.id),
-                "hybrid": HybridRetriever(self.conn, self.model, self.paths[key], tenant_id=tenant.id),
+                "reranking": RerankingRetriever(self.conn, self.model, self.paths[key], self.reranker, scope=scope),
+                "vector": PgVectorRetriever(self.conn, self.model, self.paths[key], scope=scope),
+                "hybrid": HybridRetriever(self.conn, self.model, self.paths[key], scope=scope),
+                # No path list: everything the scope allows (how the API searches).
+                "reranking, all readable": RerankingRetriever(self.conn, self.model, None, self.reranker, scope=scope),
+                "hybrid, all readable": HybridRetriever(self.conn, self.model, None, scope=scope),
             }
             for name, retriever in retrievers.items():
                 with self.subTest(tenant=key, retriever=name):
@@ -119,7 +124,7 @@ class TenantIsolationTests(unittest.TestCase):
     def test_other_tenants_paths_cannot_widen_a_search(self):
         # Even if a caller passes every path that exists anywhere, the SQL tenant filter holds.
         all_paths = self.paths["a"] + self.paths["b"] + self.default_paths
-        retriever = PgVectorRetriever(self.conn, self.model, all_paths, tenant_id=self.tenants["a"].id)
+        retriever = PgVectorRetriever(self.conn, self.model, all_paths, scope=AccessScope.operator(self.tenants["a"].id))
         results = retriever.search(QUESTION, top_k=10)
         self.assertNotIn(SECRET["b"], self.texts(results))
         stored = self.conn.execute(
@@ -129,7 +134,8 @@ class TenantIsolationTests(unittest.TestCase):
 
     def test_default_tenant_cannot_see_test_tenants(self):
         retriever = RerankingRetriever(
-            self.conn, self.model, self.default_paths + self.paths["a"], self.reranker, tenant_id=self.default.id
+            self.conn, self.model, self.default_paths + self.paths["a"], self.reranker,
+            scope=AccessScope.operator(self.default.id),
         )
         text = self.texts(retriever.search(QUESTION, top_k=10))
         self.assertNotIn(SECRET["a"], text)

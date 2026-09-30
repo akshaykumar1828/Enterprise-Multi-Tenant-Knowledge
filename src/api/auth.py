@@ -5,23 +5,26 @@ Flow:
     POST /api/v1/auth/login     -> email + password -> short-lived signed access token (HS256)
     Authorization: Bearer <token> on protected routes -> get_current_user()
 
-The token carries only the user id. The user, and with it the tenant, is
-loaded from the database on every request, so the tenant always comes from
-the server side, never from anything the client sends.
+The token carries only the user id. The user, and with it the tenant, role and
+departments (the AccessScope), is loaded from the database on every request,
+so permissions always come from the server side, never from anything the
+client sends.
 """
 
 import os
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 
 import jwt
 from fastapi import APIRouter, Depends, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from src.rag.access import AccessScope, load_access_scope
 from src.rag.db import connect_app
 from src.rag.users import User, authenticate, get_user, register_organization
 
 from .rate_limit import client_ip, email_key, enforce
-from .schemas import LoginRequest, RegisterRequest, TokenResponse, UserResponse
+from .schemas import CurrentUserResponse, DepartmentInfo, LoginRequest, RegisterRequest, TokenResponse, UserResponse
 from .settings import registration_open
 
 ALGORITHM = "HS256"
@@ -74,15 +77,24 @@ def user_id_from_token(token: str) -> int:
 bearer_scheme = HTTPBearer(auto_error=False, description="Access token from POST /api/v1/auth/login")
 
 
-def get_current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme)) -> User:
+@dataclass(frozen=True)
+class AuthenticatedUser(User):
+    """The requesting user plus their access scope, both loaded from the database for this request."""
+
+    scope: AccessScope
+
+
+def get_current_user(credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme)) -> AuthenticatedUser:
     if credentials is None:
         raise AuthError("not_authenticated", "Missing bearer token.")
     user_id = user_id_from_token(credentials.credentials)
     with connect_app() as conn:
         user = get_user(conn, user_id)
-    if user is None:
+        # Role and departments are read fresh on every request; token claims are never used for them.
+        scope = load_access_scope(conn, user_id) if user is not None else None
+    if user is None or scope is None or scope.tenant_id != user.tenant_id:
         raise AuthError("invalid_token", "The access token is invalid.")
-    return user
+    return AuthenticatedUser(**asdict(user), scope=scope)
 
 
 # --- routes ------------------------------------------------------------------
@@ -116,6 +128,16 @@ def login(body: LoginRequest, request: Request) -> TokenResponse:
     return TokenResponse(access_token=token, expires_in=expires_in)
 
 
-@router.get("/me", response_model=UserResponse)
-def me(user: User = Depends(get_current_user)) -> UserResponse:
-    return UserResponse.from_user(user)
+@router.get("/me", response_model=CurrentUserResponse)
+def me(user: AuthenticatedUser = Depends(get_current_user)) -> CurrentUserResponse:
+    # Role and departments come from the scope loaded for this request (the database).
+    with connect_app() as conn:
+        departments = conn.execute(
+            "SELECT id, slug, name FROM departments WHERE tenant_id = %s AND id = ANY(%s::bigint[]) ORDER BY name, id",
+            (user.scope.tenant_id, list(user.scope.department_ids)),
+        ).fetchall()
+    return CurrentUserResponse(
+        **UserResponse.from_user(user).model_dump(),
+        role=user.scope.role,
+        departments=[DepartmentInfo(id=id_, slug=slug, name=name) for id_, slug, name in departments],
+    )

@@ -91,6 +91,16 @@ class AppRoleTests(unittest.TestCase):
                     conn.execute("DELETE FROM tenants WHERE id = %s", (tenant_id,))
                     raise psycopg.errors.QueryCanceled("rollback")
 
+    def test_app_role_has_row_access_to_the_authorization_tables(self):
+        with self.app_conn() as conn:
+            for table in ("departments", "user_departments", "document_departments"):
+                with self.subTest(table=table):
+                    self.assertEqual(conn.execute(
+                        "SELECT has_table_privilege(%s, 'SELECT'), has_table_privilege(%s, 'INSERT'),"
+                        "       has_table_privilege(%s, 'UPDATE'), has_table_privilege(%s, 'DELETE'),"
+                        "       has_table_privilege(%s, 'TRUNCATE')", (table,) * 5).fetchone(),
+                        (True, True, True, True, False))
+
     def test_app_role_cannot_change_schema_or_escalate(self):
         forbidden = {
             "create table": "CREATE TABLE role_test_table (id int)",

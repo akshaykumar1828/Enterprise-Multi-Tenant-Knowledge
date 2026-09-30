@@ -1,6 +1,6 @@
 import { vi } from "vitest";
 
-import type { QueryResponse, User } from "../api/types";
+import type { CurrentUser, QueryResponse } from "../api/types";
 
 export interface RecordedCall {
   method: string;
@@ -13,12 +13,17 @@ type Handler = (call: RecordedCall) => { status: number; body: unknown };
 
 export const TOKEN = "test.jwt.token";
 
-export const USER: User = {
+/** GET /auth/me for an employee (the default). */
+export const USER: CurrentUser = {
   id: 1,
   email: "dev@example.com",
   display_name: "Dev User",
   tenant: { slug: "acme-1a2b3c", name: "Acme Corp" },
+  role: "employee",
+  departments: [],
 };
+
+export const ADMIN_USER: CurrentUser = { ...USER, role: "admin" };
 
 export const ANSWER: QueryResponse = {
   question: "How many annual leave days do employees receive?",
@@ -53,8 +58,10 @@ const json = (status: number, body: unknown) => ({ status, body });
 export function defaultRoutes(): Record<string, Handler> {
   return {
     "POST /api/v1/auth/login": () => json(200, { access_token: TOKEN, token_type: "bearer", expires_in: 3600 }),
-    "POST /api/v1/auth/register": (call) =>
-      json(201, { ...USER, email: (call.body as { email: string }).email }),
+    "POST /api/v1/auth/register": (call) => {
+      const { role: _role, departments: _departments, ...registered } = USER; // register returns no role
+      return json(201, { ...registered, email: (call.body as { email: string }).email });
+    },
     "GET /api/v1/auth/me": (call) =>
       call.headers.Authorization === `Bearer ${TOKEN}`
         ? json(200, USER)

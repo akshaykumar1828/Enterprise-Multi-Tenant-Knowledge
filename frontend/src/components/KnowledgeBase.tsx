@@ -91,6 +91,8 @@ export function KnowledgeBase() {
       await load(lastOnPage ? Math.max(0, offset - PAGE_SIZE) : offset);
     } catch (caught) {
       setError(message(caught));
+      // Gone, or no longer readable (e.g. its access changed): show the server's current list.
+      if (caught instanceof ApiError && caught.status === 404) await load(offset);
     } finally {
       setDeletingId(null);
     }
@@ -117,7 +119,10 @@ export function KnowledgeBase() {
             {uploading ? "Uploading…" : "Upload"}
           </button>
         </form>
-        <p className="hint">PDF, TXT or Markdown, up to {MAX_UPLOAD_MB} MB. Only your organization can search it.</p>
+        <p className="hint">
+          PDF, TXT or Markdown, up to {MAX_UPLOAD_MB} MB. Everyone in your organization can search it; an
+          administrator can limit it to departments.
+        </p>
         {uploading && <p role="status" className="hint">Reading, indexing and embedding the document…</p>}
         {error && <p className="alert alert--error" role="alert">{error}</p>}
         {notice && <p className="alert alert--info" role="status">{notice}</p>}

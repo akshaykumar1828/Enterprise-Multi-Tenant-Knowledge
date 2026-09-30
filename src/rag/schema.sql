@@ -158,3 +158,83 @@ CREATE TABLE IF NOT EXISTS rate_limits (
     PRIMARY KEY (bucket, window_start)
 );
 CREATE INDEX IF NOT EXISTS rate_limits_expires_idx ON rate_limits (expires_at);
+
+-- v9: employee-level authorization (schema only). Users get a role, users and
+-- documents can belong to departments, and a document is visible either to the
+-- whole company or only to its departments. Every link table carries tenant_id
+-- and composite foreign keys, so a link can never join rows of two tenants.
+
+-- Targets for tenant-scoped foreign keys (same pattern as documents_id_tenant_key).
+CREATE UNIQUE INDEX IF NOT EXISTS users_id_tenant_key ON users (id, tenant_id);
+
+CREATE TABLE IF NOT EXISTS departments (
+    id         bigserial   PRIMARY KEY,
+    tenant_id  bigint      NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    slug       text        NOT NULL,            -- stable identifier, e.g. "finance"
+    name       text        NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT departments_tenant_slug_key UNIQUE (tenant_id, slug),
+    CONSTRAINT departments_id_tenant_key UNIQUE (id, tenant_id)
+);
+
+-- Roles. The column is added once; only at that moment is the first user of
+-- each existing tenant (the account that created it) made its admin. Everyone
+-- else, and every user created later, is an employee unless changed explicitly.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = current_schema() AND table_name = 'users' AND column_name = 'role') THEN
+        ALTER TABLE users ADD COLUMN role text NOT NULL DEFAULT 'employee';
+        UPDATE users u SET role = 'admin'
+        WHERE u.id = (SELECT min(first.id) FROM users first WHERE first.tenant_id = u.tenant_id);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_role_check') THEN
+        ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('admin', 'employee'));
+    END IF;
+END $$;
+
+-- Department membership (a user may belong to several departments).
+CREATE TABLE IF NOT EXISTS user_departments (
+    tenant_id     bigint NOT NULL,
+    user_id       bigint NOT NULL,
+    department_id bigint NOT NULL,
+    PRIMARY KEY (user_id, department_id),
+    CONSTRAINT user_departments_user_tenant_fkey
+        FOREIGN KEY (user_id, tenant_id) REFERENCES users (id, tenant_id) ON DELETE CASCADE,
+    CONSTRAINT user_departments_department_tenant_fkey
+        FOREIGN KEY (department_id, tenant_id) REFERENCES departments (id, tenant_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS user_departments_department_idx ON user_departments (department_id);
+
+-- Document visibility. Existing documents (and new ones by default) are
+-- company-wide, which is exactly how every document behaves today.
+-- A constant default is stored in the catalog: no table rewrite.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS visibility text NOT NULL DEFAULT 'company';
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS uploaded_by bigint;   -- NULL for folder ingestion
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'documents_visibility_check') THEN
+        ALTER TABLE documents ADD CONSTRAINT documents_visibility_check CHECK (visibility IN ('company', 'departments'));
+    END IF;
+    -- The uploader must be a user of the document's own tenant. Deleting the user
+    -- keeps the document and clears only uploaded_by.
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'documents_uploaded_by_tenant_fkey') THEN
+        ALTER TABLE documents ADD CONSTRAINT documents_uploaded_by_tenant_fkey
+            FOREIGN KEY (uploaded_by, tenant_id) REFERENCES users (id, tenant_id) ON DELETE SET NULL (uploaded_by);
+    END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS documents_uploaded_by_idx ON documents (uploaded_by) WHERE uploaded_by IS NOT NULL;
+
+-- Which departments may see a 'departments' document. Removing a department
+-- removes its assignments, so such a document fails closed (fewer readers, never more).
+CREATE TABLE IF NOT EXISTS document_departments (
+    tenant_id     bigint NOT NULL,
+    document_id   bigint NOT NULL,
+    department_id bigint NOT NULL,
+    PRIMARY KEY (document_id, department_id),
+    CONSTRAINT document_departments_document_tenant_fkey
+        FOREIGN KEY (document_id, tenant_id) REFERENCES documents (id, tenant_id) ON DELETE CASCADE,
+    CONSTRAINT document_departments_department_tenant_fkey
+        FOREIGN KEY (department_id, tenant_id) REFERENCES departments (id, tenant_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS document_departments_department_idx ON document_departments (department_id);

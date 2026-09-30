@@ -30,13 +30,16 @@ from fastapi.responses import JSONResponse
 from google.genai import errors as genai_errors
 from psycopg_pool import PoolTimeout
 
+from src.rag.admin import AdminError
 from src.rag.db import close_app_pool, connect_app, open_app_pool, pool_settings
 from src.rag.llm import LLMError
 from src.rag.pipeline import CorpusEmpty, GenerationUnavailable, RAGPipeline
 from src.rag.uploads import UploadError, max_upload_bytes
-from src.rag.users import EmailAlreadyRegistered, InvalidCredentials, User
+from src.rag.users import EmailAlreadyRegistered, InvalidCredentials
 
-from .auth import AuthError, RegistrationClosed, get_current_user, secret_key
+from .admin import AdminRequired
+from .admin import router as admin_router
+from .auth import AuthenticatedUser, AuthError, RegistrationClosed, get_current_user, secret_key
 from .auth import router as auth_router
 from .documents import router as documents_router
 from .logging_setup import configure_logging, log_requests_enabled, request_id_from, request_id_var
@@ -91,6 +94,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Enterprise Knowledge RAG API", version="0.3.0", lifespan=lifespan)
 app.include_router(auth_router)
 app.include_router(documents_router)
+app.include_router(admin_router)
 
 # Room for the multipart envelope (boundaries, headers) around the file itself.
 MULTIPART_OVERHEAD_BYTES = 64 * 1024
@@ -207,6 +211,16 @@ def upload_error(request: Request, error: UploadError) -> JSONResponse:
     return error_response(error.status, error.code, error.message)
 
 
+@app.exception_handler(AdminRequired)
+def admin_required(request: Request, error: AdminRequired) -> JSONResponse:
+    return error_response(403, "admin_required", "This action requires an administrator.")
+
+
+@app.exception_handler(AdminError)
+def admin_error(request: Request, error: AdminError) -> JSONResponse:
+    return error_response(error.status, error.code, error.message)
+
+
 @app.exception_handler(InvalidCredentials)
 def invalid_credentials(request: Request, error: InvalidCredentials) -> JSONResponse:
     # Same response for an unknown email and a wrong password.
@@ -248,7 +262,7 @@ ERROR_RESPONSES = {code: {"model": ErrorResponse} for code in (401, 429, 502, 50
 
 
 @app.post("/api/v1/query", response_model=QueryResponse, responses=ERROR_RESPONSES)
-def query(body: QueryRequest, request: Request, user: User = Depends(get_current_user)) -> QueryResponse:
+def query(body: QueryRequest, request: Request, user: AuthenticatedUser = Depends(get_current_user)) -> QueryResponse:
     pipeline = get_pipeline(request)
     # Per-tenant limits: every query, and separately the ones that call Gemini
     # (the scarce resource). Sources-only queries do not use the answer budget.
@@ -258,9 +272,9 @@ def query(body: QueryRequest, request: Request, user: User = Depends(get_current
         enforce("ANSWERS", f"answer:tenant:{user.tenant_id}",
                 "Your organization has used its AI answer allowance for now. You can still view matching sources.",
                 code="answer_limit_reached")
-    # The tenant comes only from the authenticated user, never from the request body.
+    # Tenant, role and departments come only from the database, never from the request.
     result = pipeline.answer(
-        body.question, top_k=body.top_k, retrieve_only=body.retrieve_only, tenant_id=user.tenant_id
+        body.question, top_k=body.top_k, retrieve_only=body.retrieve_only, scope=user.scope
     )
     return QueryResponse(
         question=result.question,

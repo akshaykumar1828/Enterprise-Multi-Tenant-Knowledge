@@ -1,8 +1,9 @@
 """Request and response models for the API."""
 
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.rag.retriever import SearchResult
 from src.rag.uploads import DocumentInfo
@@ -62,6 +63,20 @@ class UserResponse(BaseModel):
                    tenant=TenantInfo(slug=user.tenant_slug, name=user.tenant_name))
 
 
+class DepartmentInfo(BaseModel):
+    id: int
+    slug: str
+    name: str
+
+
+class CurrentUserResponse(UserResponse):
+    """GET /auth/me: the user plus their current role and departments, read from the
+    database for this request. For display only; the server enforces access itself."""
+
+    role: Literal["admin", "employee"]
+    departments: list[DepartmentInfo]
+
+
 # --- documents (knowledge base) ----------------------------------------------------
 
 class DocumentResponse(BaseModel):
@@ -84,6 +99,98 @@ class DocumentListResponse(BaseModel):
     limit: int
     offset: int
     items: list[DocumentResponse]
+
+
+# --- administration ------------------------------------------------------------------
+
+SLUG_PATTERN = r"^[a-z0-9][a-z0-9-]{0,62}$"
+
+
+def _clean_name(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        raise ValueError("name must not be blank")
+    return value
+
+
+class DepartmentCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    slug: str = Field(pattern=SLUG_PATTERN, description="Stable identifier: lowercase letters, digits and '-'.")
+    name: str = Field(min_length=1, max_length=100)
+
+    @field_validator("name")
+    @classmethod
+    def name_not_blank(cls, value: str) -> str:
+        return _clean_name(value)
+
+
+class DepartmentUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    slug: str | None = Field(None, pattern=SLUG_PATTERN)
+    name: str | None = Field(None, min_length=1, max_length=100)
+
+    @field_validator("name")
+    @classmethod
+    def name_not_blank(cls, value: str | None) -> str | None:
+        return _clean_name(value)
+
+
+class DepartmentResponse(BaseModel):
+    id: int
+    slug: str
+    name: str
+    member_count: int
+    document_count: int
+
+
+class CompanyUserResponse(BaseModel):
+    """A user as an admin sees it; never includes a password or its hash."""
+
+    id: int
+    email: str
+    display_name: str | None
+    role: Literal["admin", "employee"]
+    department_ids: list[int]
+    created_at: datetime
+
+
+class CompanyUserListResponse(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[CompanyUserResponse]
+
+
+class RoleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["admin", "employee"]
+
+
+class DocumentAccessRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    visibility: Literal["company", "departments"]
+    department_ids: list[int] = Field(default_factory=list, max_length=500,
+                                      description="For 'departments' only; an empty list means admins only.")
+
+    @model_validator(mode="after")
+    def company_has_no_departments(self) -> "DocumentAccessRequest":
+        if self.visibility == "company" and self.department_ids:
+            raise ValueError("department_ids must be empty when visibility is 'company'")
+        return self
+
+
+class DocumentAccessResponse(BaseModel):
+    id: int
+    filename: str
+    origin: str
+    visibility: Literal["company", "departments"]
+    department_ids: list[int]
 
 
 # --- RAG query -----------------------------------------------------------------

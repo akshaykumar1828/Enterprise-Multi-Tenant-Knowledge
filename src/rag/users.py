@@ -8,6 +8,10 @@ Server-side command for creating users in an existing tenant (e.g. the
 "default" tenant, which self-registration cannot join):
     .venv\\Scripts\\python.exe -m src.rag.users create --tenant default --email dev@example.com
     .venv\\Scripts\\python.exe -m src.rag.users set-password --email dev@example.com
+    .venv\\Scripts\\python.exe -m src.rag.users set-role --email dev@example.com --role admin
+The last command is the operator's way to make someone an admin before the Admin
+API can be used (for example the founder of a self-registered organization, who
+starts as an employee). Registration never grants admin.
 """
 
 import argparse
@@ -145,6 +149,23 @@ def set_password(conn: psycopg.Connection, email: str, password: str) -> None:
         raise LookupError(f"no user with email {email!r}")
 
 
+def set_role_by_email(conn: psycopg.Connection, email: str, role: str) -> User:
+    """Operator bootstrap: change an existing user's role within their own company.
+
+    Server-side only (the users command, run with the owner's credentials); there
+    is no public way to become an admin. Uses the same checks as the Admin API,
+    including "a company always keeps at least one admin".
+    """
+    from .admin import set_user_role
+
+    found = _fetch(conn, "lower(u.email) = %s", normalize_email(email))
+    if found is None:
+        raise LookupError(f"no user with email {email!r}")
+    user = found[0]
+    set_user_role(conn, user.tenant_id, user.id, role)
+    return user
+
+
 # --- server-side command ----------------------------------------------------
 
 def _read_password(generate: bool) -> str:
@@ -161,6 +182,7 @@ def _read_password(generate: bool) -> str:
 def main() -> int:
     from dotenv import load_dotenv
 
+    from .admin import AdminError
     from .db import connect, ensure_schema
     from .tenants import TenantNotFound, get_tenant
 
@@ -174,6 +196,9 @@ def main() -> int:
     reset = commands.add_parser("set-password", help="set a user's password")
     reset.add_argument("--email", required=True)
     reset.add_argument("--generate-password", action="store_true")
+    role = commands.add_parser("set-role", help="make an existing user admin or employee of their company")
+    role.add_argument("--email", required=True)
+    role.add_argument("--role", required=True, choices=("admin", "employee"))
     args = parser.parse_args()
 
     load_dotenv(Path(__file__).resolve().parents[2] / ".env")
@@ -184,10 +209,13 @@ def main() -> int:
                 tenant = get_tenant(conn, args.tenant)
                 user = create_user(conn, tenant.id, args.email, _read_password(args.generate_password), args.display_name)
                 print(f"Created user {user.email} (id {user.id}) in tenant {user.tenant_slug}")
+            elif args.command == "set-role":
+                user = set_role_by_email(conn, args.email, args.role)
+                print(f"{user.email} is now {args.role} of tenant {user.tenant_slug}")
             else:
                 set_password(conn, args.email, _read_password(args.generate_password))
                 print(f"Password updated for {args.email}")
-        except (TenantNotFound, EmailAlreadyRegistered, LookupError, ValueError) as error:
+        except (TenantNotFound, EmailAlreadyRegistered, LookupError, ValueError, AdminError) as error:
             print(f"Error: {error.__class__.__name__}: {error}", file=sys.stderr)
             return 1
     return 0

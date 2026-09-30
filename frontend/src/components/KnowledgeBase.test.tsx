@@ -143,6 +143,26 @@ describe("knowledge base", () => {
     expect(within(screen.getByRole("table")).getByText("sample_company_handbook.md")).toBeInTheDocument();
   });
 
+  it("shows 404 on delete and reloads the list from the server", async () => {
+    const backend = documentsBackend([doc(7, "moved.md", "upload"), doc(8, "kept.md", "upload")]);
+    const calls = mockApi({
+      ...backend.routes,
+      // The document became unreadable (or was removed) after the list was loaded.
+      "DELETE /api/v1/documents/:id": () => {
+        backend.store.splice(0, 1);
+        return { status: 404, body: { error: { code: "document_not_found", message: "Document not found." } } };
+      },
+    });
+    render(<App />);
+    const user = await openKnowledgeBase();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    await user.click(await screen.findByRole("button", { name: "Delete moved.md" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Document not found.");
+    await waitFor(() => expect(screen.queryByText("moved.md")).not.toBeInTheDocument());
+    expect(screen.getByText("kept.md")).toBeInTheDocument();
+    expect(calls.filter((c) => c.method === "GET" && c.path.startsWith("/api/v1/documents")).length).toBe(2);
+  });
+
   it("returns to login when the session expires", async () => {
     mockApi({
       "GET /api/v1/documents": () => ({

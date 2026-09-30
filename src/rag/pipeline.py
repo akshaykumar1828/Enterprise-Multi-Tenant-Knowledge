@@ -7,8 +7,9 @@ Models are loaded once and reused. Each call opens its own short-lived
 database connection, and the service only reads from the database: documents
 are added with the separate ingestion command (python -m src.rag.ingest).
 
-Every search is scoped to one tenant. The API passes the authenticated user's
-tenant_id; the retriever filters by it inside its SQL.
+Every search is scoped by an AccessScope (tenant, role, departments). The API
+passes the authenticated user's scope, loaded from the database on each
+request; the retriever applies it inside its SQL.
 """
 
 import threading
@@ -18,6 +19,7 @@ from dataclasses import dataclass, field
 from google import genai
 from pgvector.psycopg import register_vector
 
+from .access import AccessScope
 from .citations import check_citations
 from .db import connect_app
 from .embeddings import MODEL_NAME as EMBEDDING_MODEL_NAME
@@ -86,21 +88,24 @@ class RAGPipeline:
             ).fetchone()
 
     # --- the pipeline -----------------------------------------------------
-    def retrieve(self, question: str, top_k: int, *, tenant_id: int) -> list[SearchResult]:
-        """Search one tenant's documents. The caller supplies a trusted tenant_id (from the authenticated user)."""
+    def retrieve(self, question: str, top_k: int, *, scope: AccessScope) -> list[SearchResult]:
+        """Search the documents `scope` may read. The caller supplies a trusted scope (loaded from the database)."""
         with connect_app() as conn:
             register_vector(conn)
-            paths = [row[0] for row in conn.execute(
-                "SELECT relative_path FROM documents WHERE tenant_id = %s", (tenant_id,))]
-            if not paths:
+            # No path list: the retriever's SQL applies the scope to every document.
+            retriever = RerankingRetriever(conn, self.embedding_model, None, self.reranker, scope=scope)
+            # Same answer whether the tenant has no documents or none this user may
+            # read, so the response never reveals that restricted documents exist.
+            if retriever.accessible_documents(limit=1) == 0:
                 raise CorpusEmpty("Your organization has no documents yet.")
-            retriever = RerankingRetriever(conn, self.embedding_model, paths, self.reranker, tenant_id=tenant_id)
             with self.model_lock:
                 return retriever.search(question, top_k=top_k)
 
-    def answer(self, question: str, top_k: int = 3, retrieve_only: bool = False, *, tenant_id: int) -> PipelineResult:
+    def answer(
+        self, question: str, top_k: int = 3, retrieve_only: bool = False, *, scope: AccessScope
+    ) -> PipelineResult:
         started = time.perf_counter()
-        sources = self.retrieve(question, top_k, tenant_id=tenant_id)
+        sources = self.retrieve(question, top_k, scope=scope)
         result = PipelineResult(question=question, sources=sources,
                                 retrieval_ms=(time.perf_counter() - started) * 1000)
         if retrieve_only:

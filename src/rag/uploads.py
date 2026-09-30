@@ -10,8 +10,9 @@ transaction in store_document). If anything fails, the stored file is removed
 and the transaction rolls back, so a failed upload leaves nothing behind and
 never touches existing documents.
 
-Every function here takes a trusted tenant_id (from the authenticated user)
-and scopes every query by it.
+Every function here takes a trusted tenant_id or AccessScope (from the
+authenticated user) and scopes every query by it. Listing and deleting use the
+AccessScope, with the same SQL filter as retrieval (access.py).
 """
 
 import hashlib
@@ -28,6 +29,7 @@ from pathlib import Path
 import psycopg
 from sentence_transformers import SentenceTransformer
 
+from .access import DOCUMENT_ACCESS_FILTER, AccessScope
 from .chunking import CHUNK_OVERLAP, CHUNK_SIZE, chunk_document
 from .ingest import store_document
 from .loader import load_document
@@ -90,25 +92,42 @@ def tenant_upload_usage(conn: psycopg.Connection, tenant_id: int) -> tuple[int, 
     ).fetchone()
 
 
-def check_upload_allowed(conn: psycopg.Connection, tenant_id: int, content_hash: str, size: int) -> None:
-    """Duplicate and tenant-limit checks for one new upload of `size` bytes."""
+def check_upload_allowed(conn: psycopg.Connection, scope: AccessScope, content_hash: str, size: int) -> None:
+    """Duplicate and tenant-limit checks for one new upload of `size` bytes by `scope`'s user.
+
+    Only duplicates the user may read count (the same filter as retrieval and
+    listing): an identical document they cannot read behaves exactly as if it did
+    not exist, so its existence and id never reach them.
+
+    The limits are tenant-wide and count every upload. Admins may read every
+    document, so they get the figures; employees get the same errors without any
+    numbers, which would otherwise describe documents they may not see.
+    """
     duplicate = conn.execute(
-        "SELECT id FROM documents WHERE tenant_id = %s AND origin = %s AND content_hash = %s",
-        (tenant_id, UPLOAD_ORIGIN, content_hash),
+        f"""SELECT d.id FROM documents d
+            WHERE {DOCUMENT_ACCESS_FILTER} AND d.origin = %(origin)s AND d.content_hash = %(content_hash)s
+            ORDER BY d.id LIMIT 1""",
+        {**scope.sql_params(), "origin": UPLOAD_ORIGIN, "content_hash": content_hash},
     ).fetchone()
     if duplicate:
         raise UploadError(409, "duplicate_document", f"This file was already uploaded (document {duplicate[0]}).")
 
-    count, used = tenant_upload_usage(conn, tenant_id)
+    count, used = tenant_upload_usage(conn, scope.tenant_id)
     max_documents, max_bytes = tenant_max_documents(), tenant_max_upload_bytes()
     if max_documents and count + 1 > max_documents:
-        raise UploadError(409, "tenant_document_limit_reached",
-                          f"Your organization has reached its limit of {max_documents} uploaded documents. "
-                          "Delete a document to upload another.")
+        if scope.is_admin:
+            message = (f"Your organization has reached its limit of {max_documents} uploaded documents. "
+                       "Delete a document to upload another.")
+        else:
+            message = "Your organization has reached its limit of uploaded documents. Please contact an administrator."
+        raise UploadError(409, "tenant_document_limit_reached", message)
     if max_bytes and used + size > max_bytes:
-        raise UploadError(409, "tenant_storage_limit_reached",
-                          f"This upload would exceed your organization's storage limit of "
-                          f"{max_bytes / (1024 * 1024):.0f} MB ({used / (1024 * 1024):.1f} MB used).")
+        if scope.is_admin:
+            message = (f"This upload would exceed your organization's storage limit of "
+                       f"{max_bytes / (1024 * 1024):.0f} MB ({used / (1024 * 1024):.1f} MB used).")
+        else:
+            message = "This upload would exceed your organization's storage limit. Please contact an administrator."
+        raise UploadError(409, "tenant_storage_limit_reached", message)
 
 
 def upload_root() -> Path:
@@ -211,16 +230,18 @@ def ingest_upload(
     conn: psycopg.Connection,
     model: SentenceTransformer,
     model_lock: threading.Lock,
-    tenant_id: int,
+    scope: AccessScope,
     filename: str,
     data: bytes,
 ) -> DocumentInfo:
+    """Store one upload for `scope`'s user, in their tenant (uploads stay company-wide for now)."""
+    tenant_id = scope.tenant_id
     extension = validate_upload(filename, data)
     display_name = safe_filename(filename)
     content_hash = hashlib.sha256(data).hexdigest()
 
     # Cheap early rejection, before anything is written, parsed or embedded.
-    check_upload_allowed(conn, tenant_id, content_hash, len(data))
+    check_upload_allowed(conn, scope, content_hash, len(data))
 
     upload_id, path = _write_file(tenant_id, extension, data)
     try:
@@ -244,7 +265,7 @@ def ingest_upload(
                 # Authoritative check: the per-tenant advisory lock (held until this
                 # transaction ends) makes check-and-store atomic across concurrent uploads.
                 conn.execute("SELECT pg_advisory_xact_lock(%s::int, %s::int)", (QUOTA_LOCK_NAMESPACE, int(tenant_id)))
-                check_upload_allowed(conn, tenant_id, content_hash, len(data))
+                check_upload_allowed(conn, scope, content_hash, len(data))
                 document_id = store_document(
                     conn, model, tenant_id, document, chunks, content_hash, CHUNK_SIZE, CHUNK_OVERLAP,
                     origin=UPLOAD_ORIGIN, size_bytes=len(data),
@@ -266,18 +287,27 @@ def get_document(conn: psycopg.Connection, tenant_id: int, document_id: int) -> 
     return DocumentInfo(*row)
 
 
-def list_documents(conn: psycopg.Connection, tenant_id: int, limit: int, offset: int) -> tuple[int, list[DocumentInfo]]:
-    total = conn.execute("SELECT count(*) FROM documents WHERE tenant_id = %s", (tenant_id,)).fetchone()[0]
+def list_documents(
+    conn: psycopg.Connection, scope: AccessScope, limit: int, offset: int
+) -> tuple[int, list[DocumentInfo]]:
+    """The documents `scope` may read (the same filter retrieval uses); total and pages count only those."""
+    total = conn.execute(
+        f"SELECT count(*) FROM documents d WHERE {DOCUMENT_ACCESS_FILTER}", scope.sql_params()
+    ).fetchone()[0]
     rows = conn.execute(
-        f"{_INFO_SELECT} WHERE d.tenant_id = %s ORDER BY d.ingested_at DESC, d.id DESC LIMIT %s OFFSET %s",
-        (tenant_id, limit, offset),
+        f"""{_INFO_SELECT} WHERE {DOCUMENT_ACCESS_FILTER}
+            ORDER BY d.ingested_at DESC, d.id DESC LIMIT %(limit)s OFFSET %(offset)s""",
+        {**scope.sql_params(), "limit": limit, "offset": offset},
     ).fetchall()
     return total, [DocumentInfo(*row) for row in rows]
 
 
-def delete_document(conn: psycopg.Connection, tenant_id: int, document_id: int) -> None:
+def delete_document(conn: psycopg.Connection, scope: AccessScope, document_id: int) -> None:
+    """Delete an uploaded document the scope may read. A document it may not read gets the
+    same 404 as one that does not exist, before any other check."""
+    readable = {**scope.sql_params(), "document_id": document_id}
     row = conn.execute(
-        "SELECT origin, path FROM documents WHERE tenant_id = %s AND id = %s", (tenant_id, document_id)
+        f"SELECT origin, path FROM documents d WHERE d.id = %(document_id)s AND {DOCUMENT_ACCESS_FILTER}", readable
     ).fetchone()
     if row is None:
         raise UploadError(404, "document_not_found", "Document not found.")
@@ -286,6 +316,7 @@ def delete_document(conn: psycopg.Connection, tenant_id: int, document_id: int) 
         raise UploadError(409, "document_managed_by_ingestion",
                           "This document is managed by server-side ingestion and cannot be deleted here.")
     with conn.transaction():
-        # Both conditions again, so this statement alone can never touch another tenant's row.
-        conn.execute("DELETE FROM documents WHERE tenant_id = %s AND id = %s", (tenant_id, document_id))  # chunks cascade
+        # The access conditions again, so this statement alone can never touch a row the scope may not read.
+        conn.execute(f"DELETE FROM documents d WHERE d.id = %(document_id)s AND {DOCUMENT_ACCESS_FILTER}",
+                     readable)  # chunks cascade
     _remove_file(Path(stored_path))

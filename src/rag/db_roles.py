@@ -24,7 +24,8 @@ from pathlib import Path
 import psycopg
 from psycopg import sql
 
-APP_TABLES = ("tenants", "users", "documents", "document_chunks", "rate_limits")
+APP_TABLES = ("tenants", "users", "documents", "document_chunks", "rate_limits",
+              "departments", "user_departments", "document_departments")
 ROLE_PATTERN = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 
 

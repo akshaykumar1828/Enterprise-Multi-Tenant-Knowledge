@@ -19,6 +19,7 @@ from pgvector.psycopg import register_vector
 
 from src.api.auth import ALGORITHM
 from src.api.main import app
+from src.rag.access import AccessScope
 from src.rag.chunking import chunk_document
 from src.rag.db import connect
 from src.rag.ingest import sync_documents
@@ -227,8 +228,9 @@ class AuthTests(unittest.TestCase):
     def test_default_tenant_results_match_the_retriever_directly(self):
         paths = [r[0] for r in self.conn.execute(
             "SELECT relative_path FROM documents WHERE tenant_id = %s", (self.default.id,))]
+        # The previous API path (every tenant path listed) must match the new one (SQL scope, no paths).
         direct = RerankingRetriever(self.conn, self.pipeline.embedding_model, paths, self.pipeline.reranker,
-                                    tenant_id=self.default.id)
+                                    scope=AccessScope.operator(self.default.id))
         for question in (HANDBOOK_QUESTION, PDF_QUESTION):
             with self.subTest(question=question):
                 expected = direct.search(question, top_k=5)
