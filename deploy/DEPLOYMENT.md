@@ -109,3 +109,8 @@ Invoke-RestMethod https://knowledge.example.com/api/v1/health          # → sta
 (Invoke-WebRequest https://knowledge.example.com/).Headers["Content-Security-Policy"]
 Get-NetTCPConnection -State Listen | Where-Object LocalPort -in 5432,8000 | Select-Object LocalAddress, LocalPort   # loopback only
 ```
+
+## 8. Backups
+
+See [BACKUP.md](BACKUP.md): database dump and restore verification
+(`python -m src.rag.backup`), uploaded files, secrets, and the recovery sequence.
