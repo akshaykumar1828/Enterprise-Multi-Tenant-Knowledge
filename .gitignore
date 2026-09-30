@@ -1,0 +1,23 @@
+# Python virtual environment
+.venv/
+
+# Python bytecode / caches
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Secrets and local configuration
+.env
+
+# Generated development artifacts (keep the folder itself)
+data/processed/*
+!data/processed/.gitkeep
+
+# Files uploaded through the API (tenant data, never committed)
+data/uploads/
+
+# Editor / OS files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini

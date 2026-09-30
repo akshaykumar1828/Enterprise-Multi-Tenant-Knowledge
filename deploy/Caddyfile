@@ -1,0 +1,59 @@
+# Production entry point: Caddy serves the built frontend and forwards /api to
+# FastAPI on 127.0.0.1:8000. FastAPI and PostgreSQL are never exposed directly.
+#
+# Environment variables (set before starting Caddy):
+#   SITE_ADDRESS   public hostname, e.g. knowledge.example.com. Caddy obtains and
+#                  renews a Let's Encrypt certificate automatically (ports 80 and
+#                  443 must reach this machine). Default "localhost" uses Caddy's
+#                  local certificate authority, for trying the setup locally.
+#   FRONTEND_DIST  absolute path to frontend/dist (the output of "npm run build")
+#   CADDY_LOG_DIR  folder for access logs (default: ./logs)
+#
+# Check the file:  caddy validate --config deploy/Caddyfile
+# Run:             caddy run --config deploy/Caddyfile
+
+{$SITE_ADDRESS:localhost} {
+	encode zstd gzip
+
+	header {
+		# HTTPS only for a year (only honored when served over HTTPS).
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		# The built app loads only its own scripts, styles and API; nothing inline.
+		Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		Cross-Origin-Opener-Policy "same-origin"
+		-Server
+	}
+
+	# API: forwarded to the single FastAPI worker on the loopback interface.
+	handle /api/* {
+		# Uploads are limited to 10 MB by the API; allow room for the multipart envelope.
+		request_body {
+			max_size 11MB
+		}
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	# Frontend: static files from the Vite build; unknown paths fall back to the app.
+	handle {
+		# Quoted: the path may contain spaces.
+		root * "{$FRONTEND_DIST}"
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		@page not path /assets/*
+		header @page Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output file "{$CADDY_LOG_DIR:./logs}/access.log" {
+			roll_size 50MiB
+			roll_keep 10
+		}
+		format json
+	}
+}
