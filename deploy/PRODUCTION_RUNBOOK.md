@@ -227,8 +227,9 @@ check with `Get-Service postgresql-x64-18 | Select-Object Status, StartType` and
 needed, `Set-Service postgresql-x64-18 -StartupType Automatic`. The API and Caddy become
 two scheduled tasks under `\EnterpriseRAG\`, started at boot, running as your account
 (not SYSTEM, limited rights, no stored password), each waiting for its dependency:
-`RAG API` waits until PostgreSQL accepts connections, `RAG Caddy` until the API's health
-check answers `ok`. Logs go to `C:\rag-logs` (`api-*.log`, `caddy-*.log`, plus Caddy's
+`RAG API` waits until PostgreSQL accepts connections, `RAG Caddy` until
+`http://127.0.0.1:8000/api/v1/health` answers HTTP 200 with `ok` or `degraded` (degraded =
+no Gemini key: sources still work, so the site is served). Logs go to `C:\rag-logs` (`api-*.log`, `caddy-*.log`, plus Caddy's
 `access.log`).
 
 ```powershell

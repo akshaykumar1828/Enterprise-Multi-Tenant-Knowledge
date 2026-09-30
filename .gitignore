@@ -22,6 +22,10 @@ data/uploads/
 *.dump
 backups/
 
+# Caddy access logs from a manual "caddy run" in the project root (the Caddyfile's
+# default when CADDY_LOG_DIR is not set)
+/logs/
+
 # Editor / OS files
 .vscode/
 .idea/

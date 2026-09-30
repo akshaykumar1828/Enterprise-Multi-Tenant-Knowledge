@@ -1,6 +1,7 @@
 # Start Caddy from a Windows scheduled task (registered by register_startup_tasks.ps1).
 #
-# Waits until the API answers its health check on the loopback interface, then runs
+# Waits until the API answers its health check on the loopback interface (status "ok"
+# or "degraded"), then runs
 # Caddy with deploy\Caddyfile and the variables from -EnvFile (SITE_ADDRESS,
 # FRONTEND_DIST, CADDY_LOG_DIR, CADDY_ADMIN; see caddy.env.example). The file is read
 # here (KEY=VALUE lines; blank lines, # comments and a UTF-8 byte-order mark are
@@ -48,16 +49,31 @@ if (-not (Test-Path -LiteralPath (Join-Path $settings["FRONTEND_DIST"] "index.ht
 }
 foreach ($key in $settings.Keys) { Set-Item -Path "Env:$key" -Value $settings[$key] }
 
-# 1. The API first (it loads the models, which takes a while after boot).
+# 1. The API first (it loads the models, which takes a while after boot). Ready means
+# HTTP 200 with status "ok" or "degraded" (degraded = AI answers unavailable, sources
+# still work: the site must be served). "unavailable" (503) or no answer = keep waiting.
+# Every change in what the API reports is logged, so a stuck wait is visible.
+Write-TaskLog "waiting for the API at $HealthUrl (up to $WaitSeconds s)"
 $deadline = (Get-Date).AddSeconds($WaitSeconds)
+$observed = ""
 while ($true) {
-    $healthy = $false
-    try { $healthy = ((Invoke-RestMethod -Uri $HealthUrl -TimeoutSec 5).status -eq "ok") } catch { $healthy = $false }
-    if ($healthy) { break }
-    if ((Get-Date) -gt $deadline) { Write-TaskLog "API not healthy at $HealthUrl after $WaitSeconds s; giving up"; exit 1 }
+    try {
+        $response = Invoke-WebRequest -Uri $HealthUrl -UseBasicParsing -TimeoutSec 5
+        $status = ($response.Content | ConvertFrom-Json).status
+        $state = "HTTP $([int]$response.StatusCode) status=$status"
+        $ready = ([int]$response.StatusCode -eq 200) -and ($status -in @("ok", "degraded"))
+    } catch {
+        $code = $null
+        if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
+        $state = if ($code) { "HTTP $code" } else { "no answer ($($_.Exception.Message))" }
+        $ready = $false
+    }
+    if ($ready) { break }
+    if ($state -ne $observed) { Write-TaskLog "API not ready yet: $state"; $observed = $state }
+    if ((Get-Date) -gt $deadline) { Write-TaskLog "API not ready at $HealthUrl after $WaitSeconds s (last: $state); giving up"; exit 1 }
     Start-Sleep -Seconds 5
 }
-Write-TaskLog "API healthy; starting Caddy for $($settings['SITE_ADDRESS'])"
+Write-TaskLog "API ready ($state); starting Caddy for $($settings['SITE_ADDRESS'])"
 
 # 2. Caddy (inherits the settings above from this process's environment).
 $process = Start-Process -FilePath $CaddyExe `
