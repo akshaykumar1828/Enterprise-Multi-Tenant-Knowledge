@@ -97,11 +97,23 @@ def window_spans(text: str, start: int, end: int, size: int, overlap: int) -> li
     return spans
 
 
+class TooManyChunks(ValueError):
+    """The document would produce more chunks than the caller allows."""
+
+    def __init__(self, limit: int):
+        super().__init__(f"document produces more than {limit} chunks")
+        self.limit = limit
+
+
 def chunk_document(
     document: Document,
     chunk_size: int = CHUNK_SIZE,
     chunk_overlap: int = CHUNK_OVERLAP,
+    *,
+    max_chunks: int | None = None,
 ) -> list[Chunk]:
+    """max_chunks (used for uploads) stops chunking as soon as it is exceeded, raising
+    TooManyChunks; without it (folder ingestion) nothing changes."""
     if chunk_overlap >= chunk_size:
         raise ValueError("chunk_overlap must be smaller than chunk_size")
 
@@ -116,6 +128,8 @@ def chunk_document(
                 end -= len(piece) - len(piece.rstrip())
                 if start >= end:
                     continue
+                if max_chunks is not None and len(chunks) >= max_chunks:
+                    raise TooManyChunks(max_chunks)
                 chunks.append(
                     Chunk(
                         # relative_path is unique across the corpus; a file name alone is not.

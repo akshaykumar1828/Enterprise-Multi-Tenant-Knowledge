@@ -98,6 +98,71 @@ app.include_router(admin_router)
 
 # Room for the multipart envelope (boundaries, headers) around the file itself.
 MULTIPART_OVERHEAD_BYTES = 64 * 1024
+UPLOAD_PATH = "/api/v1/documents"
+
+
+def upload_body_limit() -> int:
+    return max_upload_bytes() + MULTIPART_OVERHEAD_BYTES
+
+
+def file_too_large() -> JSONResponse:
+    return error_response(413, "file_too_large", f"Files can be at most {max_upload_bytes() // (1024 * 1024)} MB.")
+
+
+class _UploadBodyTooLarge(Exception):
+    pass
+
+
+class UploadBodyLimit:
+    """Caps the bytes actually received for an upload, whatever the headers say.
+
+    reject_oversized_uploads (below) refuses a too-large Content-Length up front,
+    but a request without one (chunked transfer) would otherwise be spooled to a
+    temporary file in full by the multipart parser before the route runs. Here
+    the body is counted as it arrives; past the limit, reading stops and the
+    client gets the same 413. Innermost middleware, so the outer ones (request
+    id, logging) still apply to that response.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["method"] != "POST" or scope["path"] != UPLOAD_PATH:
+            await self.app(scope, receive, send)
+            return
+        limit, received = upload_body_limit(), 0
+        exceeded = response_started = False
+
+        async def counting_receive():
+            nonlocal received, exceeded
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    exceeded = True
+                    raise _UploadBodyTooLarge()
+            return message
+
+        async def guarded_send(message):
+            nonlocal response_started
+            if exceeded:
+                return  # whatever the app answers to the aborted body is replaced by the 413 below
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, counting_receive, guarded_send)
+        except Exception:
+            # The app may surface the aborted read as its own error; ours explains it.
+            if not exceeded:
+                raise
+        if exceeded and not response_started:
+            await file_too_large()(scope, receive, send)
+
+
+app.add_middleware(UploadBodyLimit)
 
 
 @app.middleware("http")
@@ -114,10 +179,10 @@ async def reject_oversized_uploads(request: Request, call_next):
     # Refuse an upload whose declared size is already too large before its body
     # is read, so it cannot fill the disk while being received. (The route
     # still checks the actual file size.)
-    if request.method == "POST" and request.url.path == "/api/v1/documents":
+    if request.method == "POST" and request.url.path == UPLOAD_PATH:
         declared = request.headers.get("content-length", "")
-        if declared.isdigit() and int(declared) > max_upload_bytes() + MULTIPART_OVERHEAD_BYTES:
-            return error_response(413, "file_too_large", f"Files can be at most {max_upload_bytes() // (1024 * 1024)} MB.")
+        if declared.isdigit() and int(declared) > upload_body_limit():
+            return file_too_large()
     return await call_next(request)
 
 

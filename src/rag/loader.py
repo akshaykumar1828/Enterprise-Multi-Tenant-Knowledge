@@ -74,37 +74,66 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-def load_text_pages(path: Path) -> list[Page]:
+class ExtractionLimitExceeded(ValueError):
+    """A document is larger than the caller allows. `kind` is "pages" or "chars"."""
+
+    def __init__(self, kind: str, limit: int):
+        super().__init__(f"document exceeds the limit of {limit} {kind}")
+        self.kind = kind
+        self.limit = limit
+
+
+def load_text_pages(path: Path, max_chars: int | None = None) -> list[Page]:
     text = clean_text(path.read_text(encoding="utf-8"))
+    if max_chars is not None and len(text) > max_chars:
+        raise ExtractionLimitExceeded("chars", max_chars)
     return [Page(page_number=None, text=text)] if text else []
 
 
-def load_pdf_pages(path: Path) -> list[Page]:
+def load_pdf_pages(path: Path, max_pages: int | None = None, max_chars: int | None = None) -> list[Page]:
+    """Extract the text of each page. With limits, a PDF with too many pages is refused
+    before any page is extracted, and extraction stops as soon as the text is too long."""
     try:
         reader = PdfReader(path)
     except PdfReadError as error:
         raise ValueError(f"Could not read PDF {path}: {error}") from error
+    if max_pages is not None and len(reader.pages) > max_pages:
+        raise ExtractionLimitExceeded("pages", max_pages)
 
-    pages = []
+    pages, total_chars = [], 0
     for page_number, pdf_page in enumerate(reader.pages, start=1):
         text = clean_text(pdf_page.extract_text() or "")
+        total_chars += len(text)
+        if max_chars is not None and total_chars > max_chars:
+            raise ExtractionLimitExceeded("chars", max_chars)
         # Skip blank pages but keep the real page numbers of the others.
         if text:
             pages.append(Page(page_number=page_number, text=text))
     return pages
 
 
-def load_document(path: str | Path, root: str | Path | None = None) -> Document:
-    """Load one file. `root` is the documents folder its relative_path is measured from."""
+def load_document(
+    path: str | Path,
+    root: str | Path | None = None,
+    *,
+    max_pages: int | None = None,
+    max_chars: int | None = None,
+) -> Document:
+    """Load one file. `root` is the documents folder its relative_path is measured from.
+
+    max_pages (PDFs) and max_chars (extracted text) are optional resource limits,
+    used for uploads; exceeding one raises ExtractionLimitExceeded. Without them
+    (server-side folder ingestion) nothing changes.
+    """
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"Document not found: {path}")
 
     suffix = path.suffix.lower()
     if suffix == ".pdf":
-        pages = load_pdf_pages(path)
+        pages = load_pdf_pages(path, max_pages=max_pages, max_chars=max_chars)
     elif suffix in TEXT_SUFFIXES:
-        pages = load_text_pages(path)
+        pages = load_text_pages(path, max_chars=max_chars)
     else:
         raise ValueError(f"Unsupported document type '{suffix}': {path}")
 

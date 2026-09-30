@@ -10,6 +10,13 @@ transaction in store_document). If anything fails, the stored file is removed
 and the transaction rolls back, so a failed upload leaves nothing behind and
 never touches existing documents.
 
+Resource limits per upload (environment, positive integers; checked in this
+order, all before anything is embedded or stored):
+  UPLOAD_MAX_BYTES       file size (10 MiB); the API also caps the request body
+  UPLOAD_MAX_PDF_PAGES   PDF pages (300), before any page is extracted
+  UPLOAD_MAX_TEXT_CHARS  extracted characters (1,000,000), while extracting
+  UPLOAD_MAX_CHUNKS      chunks, i.e. embeddings (2,000), while chunking
+
 Every function here takes a trusted tenant_id or AccessScope (from the
 authenticated user) and scopes every query by it. Listing and deleting use the
 AccessScope, with the same SQL filter as retrieval (access.py).
@@ -30,9 +37,9 @@ import psycopg
 from sentence_transformers import SentenceTransformer
 
 from .access import DOCUMENT_ACCESS_FILTER, AccessScope
-from .chunking import CHUNK_OVERLAP, CHUNK_SIZE, chunk_document
+from .chunking import CHUNK_OVERLAP, CHUNK_SIZE, TooManyChunks, chunk_document
 from .ingest import store_document
-from .loader import load_document
+from .loader import ExtractionLimitExceeded, load_document
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ALLOWED_EXTENSIONS = {".pdf", ".txt", ".md", ".markdown"}
@@ -54,8 +61,36 @@ class UploadError(Exception):
         self.message = message
 
 
+# Per-upload resource limits, so one file cannot make extraction, chunking and
+# embedding run unbounded. All are checked before anything is embedded or stored.
+# The real corpus's largest document has 83 chunks / ~41,000 characters / 4 pages,
+# so these defaults leave ample room for legitimate files.
+DEFAULT_MAX_PDF_PAGES = 300          # UPLOAD_MAX_PDF_PAGES: checked before any page is extracted
+DEFAULT_MAX_TEXT_CHARS = 1_000_000   # UPLOAD_MAX_TEXT_CHARS: extracted text, checked while extracting
+DEFAULT_MAX_CHUNKS = 2_000           # UPLOAD_MAX_CHUNKS: chunks (= embeddings) from one file
+
+
+def _positive_int(name: str, default: int) -> int:
+    value = int(os.environ.get(name, default))
+    if value < 1:
+        raise ValueError(f"{name} must be a positive number")
+    return value
+
+
 def max_upload_bytes() -> int:
-    return int(os.environ.get("UPLOAD_MAX_BYTES", DEFAULT_MAX_UPLOAD_BYTES))
+    return _positive_int("UPLOAD_MAX_BYTES", DEFAULT_MAX_UPLOAD_BYTES)
+
+
+def max_pdf_pages() -> int:
+    return _positive_int("UPLOAD_MAX_PDF_PAGES", DEFAULT_MAX_PDF_PAGES)
+
+
+def max_text_chars() -> int:
+    return _positive_int("UPLOAD_MAX_TEXT_CHARS", DEFAULT_MAX_TEXT_CHARS)
+
+
+def max_chunks_per_upload() -> int:
+    return _positive_int("UPLOAD_MAX_CHUNKS", DEFAULT_MAX_CHUNKS)
 
 
 # Per-tenant limits on *uploaded* documents (origin = 'upload'). Folder-managed
@@ -246,9 +281,18 @@ def ingest_upload(
     upload_id, path = _write_file(tenant_id, extension, data)
     try:
         try:
-            document = load_document(path)
+            document = load_document(path, max_pages=max_pdf_pages(), max_chars=max_text_chars())
+        except ExtractionLimitExceeded as error:
+            if error.kind == "pages":
+                raise UploadError(413, "too_many_pages", f"PDFs can have at most {error.limit:,} pages.") from None
+            raise UploadError(413, "too_much_text", f"The file contains too much text: at most {error.limit:,} "
+                                                    "characters can be indexed from one file.") from None
         except Exception as error:  # unreadable PDF, no text layer, bad encoding...
-            raise UploadError(422, "unreadable_document", f"Could not extract text from the file: {error}") from None
+            # The details (which include a server-side path) go to the log, not to the client.
+            log.info("Upload could not be read: %s", error)
+            raise UploadError(422, "unreadable_document",
+                              "Could not extract text from the file. It may be damaged, scanned without a text "
+                              "layer, or not UTF-8 encoded.") from None
         document = replace(
             document,
             source=display_name,
@@ -257,7 +301,11 @@ def ingest_upload(
             doc_id=None,
             title=document.title if document.title != path.name else display_name,
         )
-        chunks = chunk_document(document)
+        try:
+            chunks = chunk_document(document, max_chunks=max_chunks_per_upload())
+        except TooManyChunks as error:
+            raise UploadError(413, "too_many_chunks", f"The file would be split into more than {error.limit:,} "
+                                                      "passages. Split it into smaller files.") from None
         if not chunks:
             raise UploadError(422, "unreadable_document", "The file contains no text to index.")
         try:

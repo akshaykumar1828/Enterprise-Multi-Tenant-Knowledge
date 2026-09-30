@@ -17,6 +17,8 @@ Limits (all from the environment; validated at startup):
   RATE_LIMIT_ANSWERS     per tenant          default 20/day      (queries that call Gemini)
   RATE_LIMIT_UPLOADS     per tenant          default 20/hour
 Format "<count>/<second|minute|hour|day>"; "off" disables one limit.
+Per-upload resource limits (positive integers; see src/rag/uploads.py):
+  UPLOAD_MAX_BYTES 10485760, UPLOAD_MAX_PDF_PAGES 300, UPLOAD_MAX_TEXT_CHARS 1000000, UPLOAD_MAX_CHUNKS 2000
 """
 
 import os
@@ -102,7 +104,14 @@ def rate_limit(name: str) -> Limit | None:
 
 def validate_limit_settings() -> None:
     """Fail at startup (not on the first request) if any limit setting is malformed."""
-    from src.rag.uploads import tenant_max_documents, tenant_max_upload_bytes
+    from src.rag.uploads import (
+        max_chunks_per_upload,
+        max_pdf_pages,
+        max_text_chars,
+        max_upload_bytes,
+        tenant_max_documents,
+        tenant_max_upload_bytes,
+    )
 
     registration_mode()
     rate_limits_enabled()
@@ -110,6 +119,11 @@ def validate_limit_settings() -> None:
         parse_limit(os.environ.get(f"RATE_LIMIT_{name}", default))
     tenant_max_documents()
     tenant_max_upload_bytes()
+    # Per-upload resource limits.
+    max_upload_bytes()
+    max_pdf_pages()
+    max_text_chars()
+    max_chunks_per_upload()
 
 
 class UnsafeDatabaseRole(RuntimeError):
