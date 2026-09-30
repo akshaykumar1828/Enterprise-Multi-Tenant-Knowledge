@@ -18,7 +18,9 @@ Only Caddy is reachable from outside. FastAPI listens on 127.0.0.1 only; Postgre
 must listen on localhost only (step 2). Development (`APP_ENV` unset) is unchanged.
 
 Run every command from the project root. Steps marked **(admin)** need an
-elevated PowerShell ("Run as administrator").
+elevated PowerShell ("Run as administrator"). **For the exact administrator commands,
+their verification and rollback, in order, follow [PRODUCTION_RUNBOOK.md](PRODUCTION_RUNBOOK.md).**
+This document explains the setup; the runbook is the checklist.
 
 ## 1. Create the API's database role
 
@@ -107,15 +109,9 @@ every profile). Required inbound access:
   PostgreSQL gets an explicit block rule as a safeguard in case a later change makes it
   listen on the network again.
 
-```powershell
-# Safeguards: nothing outside may reach PostgreSQL or the API directly.
-New-NetFirewallRule -DisplayName "Block PostgreSQL inbound (5432)" -Direction Inbound -Protocol TCP -LocalPort 5432 -Action Block
-New-NetFirewallRule -DisplayName "Block RAG API inbound (8000)"    -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Block
-
-# Only when going public: let Caddy (this program only) receive HTTP and HTTPS.
-New-NetFirewallRule -DisplayName "Caddy HTTP/HTTPS inbound" -Direction Inbound -Protocol TCP -LocalPort 80,443 `
-    -Program "C:\Program Files\Caddy\caddy.exe" -Action Allow        # adjust to where caddy.exe is installed
-```
+The exact rules (grouped as "Enterprise RAG" so they can be removed together) are in
+[PRODUCTION_RUNBOOK.md](PRODUCTION_RUNBOOK.md): step 1 (block 5432 and 8000) and step 6
+(allow 80/443, and UDP 443 for HTTP/3, for `caddy.exe` only, when going public).
 
 Loopback traffic (Caddy → API → PostgreSQL) is not affected by these rules. Review
 existing "allow" rules for interpreters too (`Get-NetFirewallRule -Direction Inbound
@@ -177,8 +173,15 @@ npm --prefix frontend run build      # → frontend/dist
 
 Stop in the reverse order (Caddy, API, then PostgreSQL if needed). For a public
 domain, ports 80 and 443 must reach this machine (router port forward) so Caddy can
-obtain the Let's Encrypt certificate. To keep the API and Caddy running after logout,
-register them as services or scheduled tasks ("At startup"), in the order above.
+obtain the Let's Encrypt certificate.
+
+To start everything at boot in this order, `deploy\register_startup_tasks.ps1` (admin)
+registers two scheduled tasks, `\EnterpriseRAG\RAG API` and `\EnterpriseRAG\RAG Caddy`.
+They run `deploy\start_api_task.ps1` (waits until PostgreSQL accepts connections, then
+runs `run_api.ps1`) and `deploy\start_caddy_task.ps1` (waits for the API's health check,
+then runs Caddy with the settings from `deploy\caddy.env`; template:
+`deploy\caddy.env.example`), with logs in `C:\rag-logs`. Try it with `-WhatIf` first;
+`-Unregister` removes the tasks. Details: [PRODUCTION_RUNBOOK.md](PRODUCTION_RUNBOOK.md), step 5.
 
 ## 7. Check
 
