@@ -9,7 +9,7 @@ from .retriever import SearchResult
 
 # Listed as Free Tier in Google's Gemini API pricing docs. Do not switch to a
 # paid-only model: this project runs without any paid subscription.
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = "gemini-3.8-flash"
 
 SYSTEM_INSTRUCTION = """You answer questions about company documents.
 
