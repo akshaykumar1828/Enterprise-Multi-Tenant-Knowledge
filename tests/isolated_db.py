@@ -159,6 +159,7 @@ def start_isolated_database() -> str:
         with conn.transaction():
             # Only the default tenant's folder corpus stays: a known, data-independent start.
             conn.execute("DELETE FROM document_departments")
+            conn.execute("UPDATE documents SET visibility = 'company' WHERE visibility <> 'company'")
             conn.execute("DELETE FROM user_departments")
             conn.execute("DELETE FROM departments")
             conn.execute("DELETE FROM documents WHERE NOT (origin = 'folder' AND tenant_id = "
