@@ -26,7 +26,7 @@ from src.api.rate_limit import RateLimited, enforce
 from src.api.settings import Limit, parse_limit, rate_limits_enabled, registration_open
 from src.rag.db import connect
 from src.rag.llm import generate_answer
-from src.rag.tenants import DEFAULT_TENANT, get_tenant
+from src.rag.tenants import DEFAULT_TENANT, get_or_create_tenant, get_tenant
 
 DOCS = "/api/v1/documents"
 QUERY = "/api/v1/query"
@@ -330,14 +330,26 @@ class LimitApiTests(unittest.TestCase):
             self.remove_extra_uploads("b")
 
     def test_folder_documents_do_not_count(self):
-        # The default tenant has 1,224 folder documents; they do not use the upload allowance.
-        before = self.counts(self.default.id)
+        # Folder-ingested documents never use the upload allowance: a tenant holding only
+        # folder documents can still upload with a limit of 1. The tenant is this test's own
+        # (it neither depends on nor writes to the default tenant).
+        tenant_id = get_or_create_tenant(self.conn, f"limits-folder-{secrets.token_hex(3)}", "Limits folder").id
+        self.tenant_ids.append(tenant_id)  # removed in tearDownClass with its users and documents
+        for i in range(3):
+            self.conn.execute(
+                """INSERT INTO documents (tenant_id, relative_path, source, source_type, path, content_hash, chunk_size,
+                                          chunk_overlap, embedding_model, embedding_input_version, origin)
+                   VALUES (%s, %s, %s, 'local', %s, repeat('0', 64), 500, 100, 'test-model', 'test', 'folder')""",
+                (tenant_id, f"folder-{i}.md", f"folder-{i}.md", f"folder-{i}.md"))
+        user, password = make_user(self.conn, tenant_id, "limits-folder")
+        token = login(self.client, user.email, password)
+        before = self.counts(tenant_id)
         with mock.patch.dict(os.environ, {"TENANT_MAX_DOCUMENTS": "1", "TENANT_MAX_UPLOAD_BYTES": "100000"}):
-            response = self.client.post(DOCS, headers=bearer(self.tokens["default"]),
-                                        files={"file": ("default-upload.md", markdown("default"), "text/markdown")})
+            response = self.client.post(DOCS, headers=bearer(token),
+                                        files={"file": ("folder-tenant-upload.md", markdown("folder tenant"), "text/markdown")})
         self.assertEqual(response.status_code, 201, response.text)
-        self.assertEqual(self.client.delete(f"{DOCS}/{response.json()['id']}", headers=bearer(self.tokens["default"])).status_code, 204)
-        self.assertEqual(self.counts(self.default.id), before)
+        self.assertEqual(self.client.delete(f"{DOCS}/{response.json()['id']}", headers=bearer(token)).status_code, 204)
+        self.assertEqual(self.counts(tenant_id), before)  # the three folder documents are untouched
 
     def test_concurrent_uploads_cannot_exceed_the_document_limit(self):
         results = []

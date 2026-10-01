@@ -155,11 +155,13 @@ class BackupRestoreTests(unittest.TestCase):
         # The comparison really covers authorization data (not just empty tables).
         for table in ("departments", "user_departments", "document_departments"):
             self.assertGreater(self.restored[f"count {table}"], 0)
-        default = self.restored_conn.execute(
-            "SELECT count(*), (SELECT count(*) FROM document_chunks c JOIN tenants t ON t.id = c.tenant_id "
-            "WHERE t.slug = %s) FROM documents d JOIN tenants t ON t.id = d.tenant_id WHERE t.slug = %s",
-            (DEFAULT_TENANT, DEFAULT_TENANT)).fetchone()
-        self.assertEqual(default, (1224, 22018))
+        # The default tenant's corpus is restored completely (compared with the source, not a fixed count).
+        query = ("SELECT count(*), (SELECT count(*) FROM document_chunks c JOIN tenants t ON t.id = c.tenant_id "
+                 "WHERE t.slug = %s) FROM documents d JOIN tenants t ON t.id = d.tenant_id WHERE t.slug = %s")
+        restored = self.restored_conn.execute(query, (DEFAULT_TENANT, DEFAULT_TENANT)).fetchone()
+        self.assertEqual(restored, self.conn.execute(query, (DEFAULT_TENANT, DEFAULT_TENANT)).fetchone())
+        self.assertGreater(restored[0], 0)
+        self.assertGreater(restored[1], 0)
 
     def test_restored_indexes_and_vector_search_work(self):
         indexes = {r[0] for r in self.restored_conn.execute("SELECT indexname FROM pg_indexes WHERE schemaname = 'public'")}

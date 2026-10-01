@@ -209,12 +209,22 @@ class DocumentTests(unittest.TestCase):
             self.delete_all_uploads("a")
 
     def test_folder_managed_documents_cannot_be_deleted_through_the_api(self):
-        items = self.client.get(DOCS, headers=bearer(self.tokens["default"]), params={"limit": 1}).json()["items"]
-        target = items[0]
-        self.assertEqual((target["origin"], target["deletable"]), ("folder", False))
-        response = self.client.delete(f"{DOCS}/{target['id']}", headers=bearer(self.tokens["default"]))
-        self.assertEqual(response.status_code, 409)
-        self.assertEqual(response.json()["error"]["code"], "document_managed_by_ingestion")
+        # A folder-ingested document of tenant A (this test's own; nothing is assumed about
+        # what the default tenant holds).
+        document_id = self.conn.execute(
+            """INSERT INTO documents (tenant_id, relative_path, source, source_type, path, content_hash, chunk_size,
+                                      chunk_overlap, embedding_model, embedding_input_version, origin)
+               VALUES (%s, 'managed.md', 'managed.md', 'local', 'managed.md', repeat('0', 64), 500, 100,
+                       'test-model', 'test', 'folder') RETURNING id""", (self.tenants["a"].id,)).fetchone()[0]
+        try:
+            listed = {d["id"]: d for d in self.client.get(DOCS, headers=bearer(self.tokens["a"])).json()["items"]}
+            self.assertEqual((listed[document_id]["origin"], listed[document_id]["deletable"]), ("folder", False))
+            response = self.client.delete(f"{DOCS}/{document_id}", headers=bearer(self.tokens["a"]))
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(response.json()["error"]["code"], "document_managed_by_ingestion")
+            self.assertEqual(self.conn.execute("SELECT count(*) FROM documents WHERE id = %s", (document_id,)).fetchone()[0], 1)
+        finally:
+            self.conn.execute("DELETE FROM documents WHERE id = %s", (document_id,))
         # tearDown also checks the default corpus is unchanged.
 
     # 6. invalid file types ------------------------------------------------------------
@@ -276,6 +286,8 @@ class DocumentTests(unittest.TestCase):
 
     # 9. listing ------------------------------------------------------------------------
     def test_listing_is_scoped_paginated_and_newest_first(self):
+        # What the default user sees before tenant A uploads anything (whatever that tenant holds).
+        default_before = self.client.get(DOCS, headers=bearer(self.tokens["default"])).json()["total"]
         ids = [self.upload("a", f"note-{i}.md", markdown(f"LIST{i}{secrets.token_hex(2)}")).json()["id"] for i in range(3)]
         try:
             body = self.client.get(DOCS, headers=bearer(self.tokens["a"])).json()
@@ -287,7 +299,7 @@ class DocumentTests(unittest.TestCase):
             self.assertEqual((page["total"], len(page["items"]), page["items"][0]["id"]), (3, 1, ids[0]))
             self.assertEqual(self.client.get(DOCS, headers=bearer(self.tokens["b"])).json()["total"], 0)
             default = self.client.get(DOCS, headers=bearer(self.tokens["default"])).json()
-            self.assertEqual(default["total"], self.default_counts[0])
+            self.assertEqual(default["total"], default_before)  # tenant A's uploads never appear there
             self.assertEqual(self.client.get(DOCS, headers=bearer(self.tokens["a"]), params={"limit": 500}).status_code, 422)
         finally:
             self.delete_all_uploads("a")

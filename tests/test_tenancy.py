@@ -16,7 +16,6 @@ from pathlib import Path
 from tests.helpers import bearer, login, make_user  # noqa: I001  (sets the test JWT secret first)
 
 import psycopg
-from dotenv import load_dotenv
 from fastapi.testclient import TestClient
 from pgvector.psycopg import register_vector
 
@@ -51,7 +50,7 @@ def write_tenant_documents(folder: Path, secret: str) -> None:
 class TenantIsolationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        load_dotenv(PROJECT_ROOT / ".env")
+        # Settings and the isolated test database come from tests.helpers (never the project .env).
         cls.model = load_model()
         cls.reranker = load_reranker()
         cls.conn = connect()

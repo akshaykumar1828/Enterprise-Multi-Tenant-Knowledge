@@ -1,16 +1,29 @@
-"""Shared test helpers: an isolated JWT secret and throwaway users."""
+"""Shared test helpers: an isolated JWT secret, an isolated database, and throwaway users.
+
+Every test module imports this first, so for the whole test run:
+- tokens are signed with a random key, never the real JWT_SECRET_KEY;
+- settings come from the test settings file, never the production .env, and the API
+  does not read the project .env at startup either;
+- all database work happens in a throwaway copy of the database (tests/isolated_db.py),
+  which is dropped when the run ends. The live database is only read once (pg_dump).
+"""
 
 import os
 import secrets
-from pathlib import Path
 
-from dotenv import load_dotenv
-
-# Tests sign tokens with their own random key, never the real one from .env.
-# (load_dotenv does not override variables that are already set.)
+# Tests sign tokens with their own random key, never the real one.
 os.environ["JWT_SECRET_KEY"] = secrets.token_urlsafe(64)
-# Database settings for every test module, whichever runs first.
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
+from tests.isolated_db import load_test_settings, start_isolated_database  # noqa: E402
+
+load_test_settings()
+start_isolated_database()
+
+import src.api.main as _api_main  # noqa: E402
+
+# The API loads <project>\.env at startup; during tests that file may be the production
+# configuration, so the test settings above are the only ones used.
+_api_main.load_dotenv = lambda *args, **kwargs: False
 
 from src.rag.users import User, create_user  # noqa: E402
 
