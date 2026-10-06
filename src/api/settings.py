@@ -14,7 +14,8 @@ Limits (all from the environment; validated at startup):
   RATE_LIMIT_LOGIN       per IP + email      default 5/minute
   RATE_LIMIT_REGISTER    per IP              default 3/hour
   RATE_LIMIT_QUERIES     per tenant          default 30/minute   (every /query)
-  RATE_LIMIT_ANSWERS     per tenant          default 20/day      (queries that call Gemini)
+  RATE_LIMIT_ANSWERS     per tenant          default 20/day      (queries that get a written answer;
+                                                                  set "off" with the local Ollama model)
   RATE_LIMIT_UPLOADS     per tenant          default 20/hour
 Format "<count>/<second|minute|hour|day>"; "off" disables one limit.
 Per-upload resource limits (positive integers; see src/rag/uploads.py):
@@ -200,7 +201,7 @@ def validate_production_settings() -> list[str]:
         raise ProductionConfigError("Unsafe production configuration:\n  - " + "\n  - ".join(problems))
 
     warnings = []
-    if not os.environ.get("GEMINI_API_KEY"):
+    if os.environ.get("LLM_PROVIDER", "ollama").strip().lower() == "gemini" and not os.environ.get("GEMINI_API_KEY"):
         warnings.append("GEMINI_API_KEY is not set: AI answers are disabled (sources-only still works)")
     if os.environ.get("HF_HUB_OFFLINE", "").strip().lower() not in ("1", "true", "yes", "on"):
         warnings.append("HF_HUB_OFFLINE is not set: model loading may contact the Hugging Face Hub")

@@ -140,6 +140,23 @@ def authenticate(conn: psycopg.Connection, email: str, password: str) -> User:
     return user
 
 
+class WrongCurrentPassword(Exception):
+    pass
+
+
+def change_password(conn: psycopg.Connection, user_id: int, current_password: str, new_password: str) -> None:
+    """A user changes their own password; the current one must be given and correct."""
+    found = _fetch(conn, "u.id = %s", user_id)
+    if found is None:
+        raise WrongCurrentPassword()
+    _, password_hash = found
+    try:
+        _hasher.verify(password_hash, current_password)
+    except (VerifyMismatchError, VerificationError, InvalidHashError):
+        raise WrongCurrentPassword() from None
+    conn.execute("UPDATE users SET password_hash = %s WHERE id = %s", (hash_password(new_password), user_id))
+
+
 def set_password(conn: psycopg.Connection, email: str, password: str) -> None:
     updated = conn.execute(
         "UPDATE users SET password_hash = %s WHERE lower(email) = %s",

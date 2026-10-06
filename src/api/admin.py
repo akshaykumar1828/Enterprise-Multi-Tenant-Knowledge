@@ -22,6 +22,7 @@ from .schemas import (
     DepartmentUpdateRequest,
     DocumentAccessRequest,
     DocumentAccessResponse,
+    EmployeeCreateRequest,
     ErrorResponse,
     RoleRequest,
 )
@@ -94,6 +95,23 @@ def list_users(
     with connect_app() as conn:
         total, users = service.list_users(conn, admin.scope.tenant_id, limit, offset)
     return CompanyUserListResponse(total=total, limit=limit, offset=offset, items=[_user_response(u) for u in users])
+
+
+@router.post("/users", response_model=CompanyUserResponse, status_code=status.HTTP_201_CREATED, responses=ERRORS)
+def create_employee(body: EmployeeCreateRequest, admin: AuthenticatedUser = Depends(require_admin)) -> CompanyUserResponse:
+    """Create an employee in the admin's own company (never another tenant, never an admin)."""
+    with connect_app() as conn:
+        user = service.create_employee(conn, admin.scope.tenant_id, body.email, body.password,
+                                       body.display_name, body.department_ids)
+    return _user_response(user)
+
+
+@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT, responses=ERRORS)
+def delete_user(user_id: int, admin: AuthenticatedUser = Depends(require_admin)) -> Response:
+    """Delete a user of the admin's own company (not yourself, not the last admin)."""
+    with connect_app() as conn:
+        service.delete_user(conn, admin.scope.tenant_id, user_id, admin.scope.user_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.put("/users/{user_id}/role", response_model=CompanyUserResponse, responses=ERRORS)

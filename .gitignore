@@ -31,3 +31,7 @@ backups/
 .idea/
 Thumbs.db
 Desktop.ini
+
+# Company documents: a private corpus, ingested locally and never published
+data/documents/*
+!data/documents/README.md

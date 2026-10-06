@@ -97,6 +97,9 @@ class AdminApiTests(unittest.TestCase):
         self.conn.execute("UPDATE users SET role = CASE WHEN id = ANY(%s) THEN 'admin' ELSE 'employee' END "
                           "WHERE tenant_id = ANY(%s)", ([self.users["admin"], self.users["b_admin"]], ids))
         self.conn.execute("DELETE FROM user_departments WHERE tenant_id = ANY(%s)", (ids,))
+        # Employees created by a test through POST /users are removed again.
+        self.conn.execute("DELETE FROM users WHERE tenant_id = ANY(%s) AND NOT (id = ANY(%s))",
+                          (ids, list(self.users.values())))
         self.conn.execute("DELETE FROM document_departments WHERE tenant_id = ANY(%s)", (ids,))
         self.conn.execute("UPDATE documents SET visibility = 'company' WHERE tenant_id = ANY(%s)", (ids,))
         self.conn.execute("DELETE FROM departments WHERE tenant_id = ANY(%s) AND NOT (id = ANY(%s))",
@@ -147,6 +150,8 @@ class AdminApiTests(unittest.TestCase):
             ("PATCH", f"/departments/{department_id}", {"name": "Renamed"}),
             ("DELETE", f"/departments/{department_id}", None),
             ("GET", "/users", None),
+            ("POST", "/users", {"email": f"new-{secrets.token_hex(4)}@example.test", "password": secrets.token_urlsafe(18),
+                                "display_name": "New Person", "department_ids": [department_id]}),
             ("PUT", f"/users/{user_id}/role", {"role": "admin"}),
             ("PUT", f"/users/{user_id}/departments/{department_id}", None),
             ("DELETE", f"/users/{user_id}/departments/{department_id}", None),
@@ -348,6 +353,89 @@ class AdminApiTests(unittest.TestCase):
             set_role_by_email(self.conn, self.emails["b_admin"], "employee")
         with self.assertRaises(LookupError):
             set_role_by_email(self.conn, "nobody-" + self.emails["bob"], "admin")
+
+    # --- creating employees -------------------------------------------------------------------------
+    def new_employee(self, admin: str = "admin", record: bool = True, **overrides):
+        body = {"email": f"emp-{secrets.token_hex(4)}@example.test", "password": secrets.token_urlsafe(18),
+                "display_name": "  Ravi Kumar ", "department_ids": [], **overrides}
+        if record:
+            return self.call(admin, "POST", "/users", body), body
+        # Not kept for the secrets check: 422 validation messages name the "password" field.
+        return self.client.post(f"{ADMIN}/users", json=body, headers=bearer(self.tokens[admin])), body
+
+    def test_admin_creates_an_employee_in_a_department_who_can_log_in(self):
+        self.call("admin", "PUT", f"/documents/{self.doc['vault.md']}/access",
+                  {"visibility": "departments", "department_ids": [self.dept["finance"]]})
+        response, body = self.new_employee(department_ids=[self.dept["finance"]])
+        self.assertEqual(response.status_code, 201, response.text)
+        created = response.json()
+        self.assertEqual((created["email"], created["display_name"], created["role"], created["department_ids"]),
+                         (body["email"], "Ravi Kumar", "employee", [self.dept["finance"]]))
+        self.assertNotIn("password", response.text.lower())
+        self.assertIn(created["id"], [u["id"] for u in self.call("admin", "GET", "/users?limit=200").json()["items"]])
+
+        # The new employee logs in with the initial password and gets exactly Finance access.
+        token = login(self.client, body["email"], body["password"])
+        me = self.client.get("/api/v1/auth/me", headers=bearer(token)).json()
+        self.assertEqual((me["role"], [d["name"] for d in me["departments"]]), ("employee", ["Finance"]))
+        listed = {i["id"] for i in self.client.get(DOCS, headers=bearer(token), params={"limit": 200}).json()["items"]}
+        self.assertIn(self.doc["vault.md"], listed)
+        self.assertNotIn(self.doc["vault.md"], self.listed("alice"))  # alice is in no department
+        self.assertEqual(self.client.get(f"{ADMIN}/users", headers=bearer(token)).status_code, 403)
+
+    def test_creating_employees_is_validated_and_all_or_nothing(self):
+        users_before = self.state()[0]
+        existing, _ = self.new_employee(email=self.emails["alice"])
+        self.assertEqual((existing.status_code, existing.json()["error"]["code"]), (409, "email_already_registered"))
+        # A department of another tenant looks like an unknown one, and nothing is created.
+        foreign, body = self.new_employee(department_ids=[self.dept["finance"], self.dept["b_finance"]])
+        self.assertEqual((foreign.status_code, foreign.json()["error"]["code"]), (404, "department_not_found"))
+        self.assertIsNone(self.conn.execute("SELECT id FROM users WHERE email = %s", (body["email"],)).fetchone())
+        for overrides in ({"password": "short"}, {"email": "not-an-email"}, {"role": "admin"},
+                          {"tenant_id": self.tenant["b"]}):
+            with self.subTest(overrides=overrides):
+                self.assertEqual(self.new_employee(record=False, **overrides)[0].status_code, 422)
+        self.assertEqual(self.state()[0], users_before)
+
+    def test_new_employees_always_belong_to_the_admins_own_tenant(self):
+        response, body = self.new_employee(admin="b_admin")
+        self.assertEqual(response.status_code, 201, response.text)
+        tenant = self.conn.execute("SELECT tenant_id FROM users WHERE id = %s", (response.json()["id"],)).fetchone()[0]
+        self.assertEqual(tenant, self.tenant["b"])
+        self.assertNotIn(body["email"], [u["email"] for u in self.call("admin", "GET", "/users?limit=200").json()["items"]])
+
+    # --- deleting users -----------------------------------------------------------------------------
+    def test_admin_deletes_an_employee_whose_access_ends_immediately(self):
+        response, body = self.new_employee(department_ids=[self.dept["finance"]])
+        employee = response.json()["id"]
+        token = login(self.client, body["email"], body["password"])
+        self.assertEqual(self.client.get(DOCS, headers=bearer(token)).status_code, 200)
+
+        deleted = self.call("admin", "DELETE", f"/users/{employee}")
+        self.assertEqual(deleted.status_code, 204, deleted.text)
+        self.assertNotIn(employee, [u["id"] for u in self.call("admin", "GET", "/users?limit=200").json()["items"]])
+        self.assertEqual(self.conn.execute("SELECT count(*) FROM user_departments WHERE user_id = %s",
+                                           (employee,)).fetchone()[0], 0)
+        self.assertEqual(self.client.get(DOCS, headers=bearer(token)).status_code, 401)  # old token is dead
+        self.assertEqual(self.call("admin", "DELETE", f"/users/{employee}").status_code, 404)  # already gone
+
+    def test_delete_refuses_self_other_tenants_and_employees(self):
+        before = self.state()
+        own = self.call("admin", "DELETE", f"/users/{self.users['admin']}")
+        self.assertEqual((own.status_code, own.json()["error"]["code"]), (409, "cannot_delete_self"))
+        foreign = self.call("admin", "DELETE", f"/users/{self.users['b_admin']}")
+        self.assertEqual((foreign.status_code, foreign.json()["error"]["code"]), (404, "user_not_found"))
+        employee = self.call("alice", "DELETE", f"/users/{self.users['bob']}")
+        self.assertEqual((employee.status_code, employee.json()["error"]["code"]), (403, "admin_required"))
+        self.assertEqual(self.client.delete(f"{ADMIN}/users/{self.users['bob']}").status_code, 401)
+        self.assertEqual(self.state(), before)
+
+    def test_an_admin_can_delete_another_admin(self):
+        self.call("admin", "PUT", f"/users/{self.users['bob']}/role", {"role": "admin"})
+        response, _ = self.new_employee()
+        other_admin = response.json()["id"]
+        self.call("admin", "PUT", f"/users/{other_admin}/role", {"role": "admin"})
+        self.assertEqual(self.call("admin", "DELETE", f"/users/{other_admin}").status_code, 204)
 
     # --- no secrets ---------------------------------------------------------------------------------
     def test_responses_never_contain_password_hashes_or_secrets(self):

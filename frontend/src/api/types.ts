@@ -29,12 +29,6 @@ export interface CurrentUser extends User {
   departments: DepartmentInfo[];
 }
 
-export interface RegisterRequest {
-  organization_name: string;
-  email: string;
-  password: string;
-  display_name?: string;
-}
 
 export interface TokenResponse {
   access_token: string;
@@ -58,6 +52,12 @@ export interface KnowledgeDocument {
   chunk_count: number;
   ingested_at: string;
   deletable: boolean;
+  /**
+   * One or two sentences taken from the document's own opening text (no AI). Only present for
+   * documents in this (server-filtered) list; null when the document has no usable opening text.
+   * Optional so older API responses without the field still work.
+   */
+  description?: string | null;
 }
 
 export interface DocumentList {

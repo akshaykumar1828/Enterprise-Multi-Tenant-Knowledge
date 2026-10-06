@@ -40,6 +40,13 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
 
 
+class PasswordChangeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    current_password: str = Field(min_length=1, max_length=MAX_PASSWORD_LENGTH)
+    new_password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
+
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
@@ -87,11 +94,14 @@ class DocumentResponse(BaseModel):
     chunk_count: int
     ingested_at: datetime
     deletable: bool = Field(description="Only uploaded documents can be deleted through the API.")
+    description: str | None = Field(
+        None, description="One or two sentences taken from the document's opening text (no AI); null if none.")
 
     @classmethod
     def from_info(cls, info: DocumentInfo) -> "DocumentResponse":
         return cls(id=info.id, filename=info.filename, source_type=info.source_type, origin=info.origin,
-                   chunk_count=info.chunk_count, ingested_at=info.ingested_at, deletable=info.deletable)
+                   chunk_count=info.chunk_count, ingested_at=info.ingested_at, deletable=info.deletable,
+                   description=info.description)
 
 
 class DocumentListResponse(BaseModel):
@@ -163,6 +173,29 @@ class CompanyUserListResponse(BaseModel):
     limit: int
     offset: int
     items: list[CompanyUserResponse]
+
+
+class EmployeeCreateRequest(BaseModel):
+    """A new employee of the admin's own company. No tenant or role field: the account is always
+    an employee of the admin's tenant (promote with PUT /users/{id}/role)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: str = Field(max_length=254)
+    password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH,
+                          description="Initial password; share it with the employee securely.")
+    display_name: str | None = Field(None, max_length=100)
+    department_ids: list[int] = Field(default_factory=list, max_length=50)
+
+    @field_validator("email")
+    @classmethod
+    def valid_email(cls, value: str) -> str:
+        return normalize_email(value)
+
+    @field_validator("display_name")
+    @classmethod
+    def clean_display_name(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
 
 
 class RoleRequest(BaseModel):

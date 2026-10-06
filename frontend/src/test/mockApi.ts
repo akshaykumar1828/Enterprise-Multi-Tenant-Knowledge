@@ -18,7 +18,7 @@ export const USER: CurrentUser = {
   id: 1,
   email: "dev@example.com",
   display_name: "Dev User",
-  tenant: { slug: "acme-1a2b3c", name: "Acme Corp" },
+  tenant: { slug: "default", name: "Redwood Inference" },
   role: "employee",
   departments: [],
 };
@@ -58,10 +58,6 @@ const json = (status: number, body: unknown) => ({ status, body });
 export function defaultRoutes(): Record<string, Handler> {
   return {
     "POST /api/v1/auth/login": () => json(200, { access_token: TOKEN, token_type: "bearer", expires_in: 3600 }),
-    "POST /api/v1/auth/register": (call) => {
-      const { role: _role, departments: _departments, ...registered } = USER; // register returns no role
-      return json(201, { ...registered, email: (call.body as { email: string }).email });
-    },
     "GET /api/v1/auth/me": (call) =>
       call.headers.Authorization === `Bearer ${TOKEN}`
         ? json(200, USER)

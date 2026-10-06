@@ -1,8 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { setUnauthorizedHandler } from "../api/client";
-import { fetchCurrentUser, login as loginRequest, registerOrganization } from "../api/endpoints";
-import type { CurrentUser, RegisterRequest } from "../api/types";
+import { fetchCurrentUser, login as loginRequest } from "../api/endpoints";
+import type { CurrentUser } from "../api/types";
 import { clearToken, readToken, saveToken } from "./tokenStorage";
 
 type Status = "checking" | "anonymous" | "authenticated";
@@ -18,7 +18,6 @@ interface AuthState {
   /** Shown on the login screen, e.g. after a session expired. */
   notice: string | null;
   login: (email: string, password: string) => Promise<void>;
-  register: (request: RegisterRequest) => Promise<void>;
   logout: () => void;
   /** Re-read /auth/me, e.g. after the server said this user is no longer an admin. */
   refreshUser: () => Promise<void>;
@@ -74,14 +73,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus("authenticated");
   }, []);
 
-  const register = useCallback(
-    async (request: RegisterRequest) => {
-      await registerOrganization(request);
-      await login(request.email, request.password);
-    },
-    [login],
-  );
-
   const logout = useCallback(() => endSession(null), [endSession]);
 
   const refreshUser = useCallback(async () => {
@@ -95,8 +86,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [token]);
 
   const value = useMemo(
-    () => ({ status, user, token, notice, login, register, logout, refreshUser }),
-    [status, user, token, notice, login, register, logout, refreshUser],
+    () => ({ status, user, token, notice, login, logout, refreshUser }),
+    [status, user, token, notice, login, logout, refreshUser],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

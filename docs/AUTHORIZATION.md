@@ -64,13 +64,18 @@ A document with several departments counts once in each, which is why the column
 
 | Class | Documents | Stored as | Who can read |
 |---|---|---|---|
-| Company-wide | 33 | `visibility = company`, no links | everyone in the tenant |
+| Company-wide | 31 | `visibility = company`, no links | everyone in the tenant |
 | Department | 1,166 | `visibility = departments` + 1..n links | admins, and members of any linked department |
 | Admin-only | 9 | `visibility = departments`, **0 links** | admins only |
 | Pending review | 16 | `visibility = departments`, **0 links** | admins only |
-| **Total** | **1,224** | 1,191 `departments` + 33 `company`; 1,373 links | |
+| **Total** | **1,222** | 1,191 `departments` + 31 `company`; 1,373 links | |
 
-The 33 company-wide documents are the company handbook, the IT security policy, 14 messages from broad Slack channels
+The two sample documents (a synthetic "Brightfield Analytics" handbook and IT security policy, ids 1 and 2, both
+company-wide with no department links) were removed on 2026-10-03, after a verified backup
+(`enterprise_rag-pre-sample-removal-20261003-004011.dump`). They are now test fixtures in `tests/fixtures/`.
+The numbers in the rollout sections below are as of the rollout (1,224 documents, 33 company-wide).
+
+The 31 company-wide documents are 14 messages from broad Slack channels
 (all-hands, announcements, general, social), 16 Confluence pages that state they apply to everyone, and 1 company
 town-hall transcript.
 
@@ -127,6 +132,8 @@ document-access screen. Don't invent a department: assign one only when the docu
 |---|---|---|
 | List or create departments | `GET`, `POST /api/v1/admin/departments` | Admin → Departments |
 | Rename or delete a department | `PATCH`, `DELETE /api/v1/admin/departments/{id}` (refused while documents are assigned) | Admin → Departments |
+| Add an employee (own company only, always an employee, optional departments) | `POST /api/v1/admin/users` with body `{"email", "password", "display_name"?, "department_ids": [...]}` | Admin → Users → Add employee |
+| Delete a user (not yourself, not the last admin; memberships removed, uploaded documents kept) | `DELETE /api/v1/admin/users/{id}` | Admin → Users → Delete |
 | Make a user admin or employee | `PUT /api/v1/admin/users/{id}/role` (refused if it would leave the company without an admin) | Admin → Users |
 | Add or remove a membership | `PUT`, `DELETE /api/v1/admin/users/{id}/departments/{department_id}` | Admin → Users |
 | See or set a document's access | `GET`, `PUT /api/v1/admin/documents/{id}/access` with body `{"visibility": "company"\|"departments", "department_ids": [...]}` | Admin → Document access |
@@ -134,5 +141,8 @@ document-access screen. Don't invent a department: assign one only when the docu
 Every admin route requires an admin scope loaded from the database. IDs from another tenant return the same 404 as
 unknown IDs.
 
-**Known gap:** the application has no endpoint for deleting a user. The temporary users created for the rollout
-smoke tests were removed with a guarded owner transaction (exact IDs, pattern-checked e-mails, row count verified).
+Admins add and delete employees in **Admin → Users** (added 2026-10-03). Before that, the temporary users created
+for the rollout smoke tests were removed with a guarded owner transaction (exact IDs, pattern-checked e-mails, row
+count verified). Every user changes their own password in the account menu (**Change password**, which requires the
+current password; `POST /api/v1/auth/change-password`, rate limited like login). If someone forgets their password,
+an operator resets it with `python -m src.rag.users set-password --email <email>`.

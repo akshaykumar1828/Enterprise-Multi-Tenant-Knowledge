@@ -74,6 +74,8 @@ secrets found in the dump. Their names don't match the retention pattern, so the
 | `enterprise_rag-pre-authz-access-20261001-181756.dump` (53.0 MB) | the 8 departments created, no document access applied yet | `cd3923987567c249b39ca8a2da2a00162d83c91fbb5c88eef5d7b2c2be25215f` |
 
 An older restore point, from before the demo-data cleanup, is `enterprise_rag-pre-demo-cleanup-20261001-153901.dump`.
+Before the two sample documents were removed (2026-10-03): `enterprise_rag-pre-sample-removal-20261003-004011.dump`
+(SHA-256 `91d4589a38dc14219c529b0bdc856c238f4dbb63a8c3dd409be0aed2de25ba01`, verified OK).
 
 ## Security hardening
 
@@ -157,6 +159,7 @@ Run these from the project root in PowerShell. `python` means `.venv\Scripts\pyt
 | Ingest or refresh the folder corpus (default tenant) | `python -m src.rag.ingest` |
 | Ingest another tenant's folder | `python -m src.rag.ingest --tenant <slug> --documents-dir <folder> --create-tenant` |
 | Ask from the CLI without Gemini (operator scope) | `python -m src.rag "<question>" --retrieve-only` |
+| Rename the company (shown in the sidebar; slug stays `default`) | `python -m src.rag.tenants rename --name "Redwood Inference"` |
 | Create a user | `python -m src.rag.users create --tenant default --email <email>` |
 | Reset a password | `python -m src.rag.users set-password --email <email>` |
 | Make a user admin or employee | `python -m src.rag.users set-role --email <email> --role admin` |
@@ -171,7 +174,7 @@ Run these from the project root in PowerShell. `python` means `.venv\Scripts\pyt
 To check the access state read-only (owner connection, `psql`):
 
 ```sql
-SELECT visibility, count(*) FROM documents GROUP BY 1;                       -- company 33, departments 1191
+SELECT visibility, count(*) FROM documents GROUP BY 1;                       -- company 31, departments 1191
 SELECT dp.name, count(*) FROM document_departments dd
   JOIN departments dp ON dp.id = dd.department_id GROUP BY 1 ORDER BY 1;     -- 1,373 links in total
 SELECT d.id FROM documents d
@@ -180,6 +183,9 @@ SELECT d.id FROM documents d
 ```
 
 Make authorization changes through the Admin API or the admin panel, never with direct SQL.
+
+The site serves one company, Redwood Inference (tenant slug `default`). The web app has no sign-up page: admins add
+employees in Admin → Users, and everyone changes their own password from the user menu.
 
 ## Git checkpoint
 
@@ -196,10 +202,14 @@ Make authorization changes through the Admin API or the admin panel, never with 
 
 - **Pending review:** 16 documents are held admin-only until a human decides; see
   [AUTHORIZATION.md](AUTHORIZATION.md#pending-review-16).
-- **Memberships:** none exist yet. Assign employees to departments as they are onboarded.
-- **Gemini:** the model is `gemini-3.8-flash` (free tier, about 20 answers a day). An end-to-end generated answer
+- **Memberships:** assign employees to departments as they are onboarded (Admin → Users, or when adding them).
+- **Answer model:** written answers come from the local Ollama model `gemma3:4b` (free, unlimited; about 10–15 s
+  per answer on the RTX 3050). Ollama starts with the Windows user session, so it must be running for written
+  answers; sources-only always works. Set `RATE_LIMIT_ANSWERS=off` in the production `.env`. The API loads the
+  model in the background at startup, and each answer keeps it loaded for 30 minutes (`OLLAMA_KEEP_ALIVE`, for example
+  `2h` or `-1` for always). The first answer after a longer break still takes about a minute to reload it.
+- **Gemini (optional):** `LLM_PROVIDER=gemini` uses `gemini-3.8-flash` (free tier, about 20 answers a day). An end-to-end generated answer
   hasn't been confirmed since the model change, because earlier attempts returned 503 (high demand). Retrieval-only
   queries are unaffected.
-- **User deletion:** there is no delete-user endpoint yet.
 - **Going public:** HTTPS on a public domain and opening the firewall for 80/443 are runbook step 6. Do them only
   when the site goes public.

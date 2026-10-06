@@ -12,7 +12,8 @@ Browser ──HTTPS──► Caddy (deploy/Caddyfile)
                     └─ /api/*   → 127.0.0.1:8000 FastAPI (src/api), one uvicorn worker
                                     ├─ PostgreSQL 18 + pgvector 0.8 (127.0.0.1:5432), role rag_app
                                     ├─ sentence-transformers models (local, GPU if available)
-                                    └─ Google Gemini API (answer generation only)
+                                    └─ Ollama on 127.0.0.1:11434, gemma3:4b (answer generation only;
+                                       optional alternative: Google Gemini API)
 ```
 
 | Component | Code | Role |
@@ -59,7 +60,7 @@ schema itself refuses any link that crosses tenants.
   context. The embedding model is `sentence-transformers/all-MiniLM-L6-v2` (384 dimensions), running locally.
 - **Incremental sync.** Each document stores a SHA-256 content hash, so only new or changed files are re-embedded.
 - **Two ways in:**
-  - The folder corpus (`data/documents/`, 1,224 documents) belongs to the `default` tenant and is loaded with
+  - The folder corpus (`data/documents/`, 1,222 documents) belongs to the `default` tenant and is loaded with
     `python -m src.rag.ingest`.
   - Users can upload through `POST /api/v1/documents`. Uploads are checked against a byte limit, a PDF page limit, a
     text-character limit and a chunk limit, plus per-tenant document and storage quotas. Duplicates are detected
@@ -73,8 +74,10 @@ schema itself refuses any link that crosses tenants.
    therefore never selected, never ranked, never reranked and never sent to the LLM.
 3. **Rerank** the candidates with the `cross-encoder/ms-marco-MiniLM-L6-v2` cross-encoder.
 4. **Diversify**, keeping at most 2 chunks per document, and take the top `top_k` (1–10, default 3).
-5. **Generate** the answer with Gemini (`gemini-3.8-flash`, free tier) from the numbered sources only.
-   `retrieve_only=true` skips this step and makes no Gemini call.
+5. **Generate** the answer from the numbered sources only. By default this uses a local model through
+   Ollama (`LLM_PROVIDER=ollama`, `OLLAMA_MODEL=gemma3:4b-it-q4_K_M`): free, unlimited, and the passages
+   never leave the server. `LLM_PROVIDER=gemini` uses Gemini (`gemini-3.8-flash`, free tier) instead.
+   `retrieve_only=true` skips this step.
 6. **Check citations.** Any `[n]` in the answer that doesn't match a retrieved source is removed and reported in
    `removed_citations`.
 
@@ -92,6 +95,6 @@ API uses `RerankingRetriever`.
 | Tenants | 1 (`default`) |
 | Users | 1 (admin) |
 | Departments | 8 |
-| Documents | 1,224 (EnterpriseRAG-Bench slice: 1,222 files, plus the company handbook and the IT security policy) |
-| Chunks | 22,018 |
+| Documents | 1,222 (EnterpriseRAG-Bench slice; the two sample files were removed on 2026-10-03 and now live in `tests/fixtures/`) |
+| Chunks | 21,999 |
 | Document–department links | 1,373 |

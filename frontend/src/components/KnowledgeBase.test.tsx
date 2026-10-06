@@ -1,6 +1,6 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import App from "../App";
 import type { KnowledgeDocument } from "../api/types";
@@ -44,8 +44,15 @@ async function openKnowledgeBase(user = userEvent.setup()) {
   await user.type(screen.getByLabelText("Email"), "dev@example.com");
   await user.type(screen.getByLabelText("Password"), "correct horse battery");
   await user.click(screen.getByRole("button", { name: "Log in" }));
-  await user.click(await screen.findByRole("button", { name: "Knowledge base" }));
+  await user.click(await screen.findByRole("button", { name: "Documents" }));
   return user;
+}
+
+/** Answer the confirmation dialog. */
+async function answerDialog(user: ReturnType<typeof userEvent.setup>, button: "Cancel" | "Delete document") {
+  const dialog = await screen.findByRole("alertdialog", { name: "Delete this document?" });
+  await user.click(within(dialog).getByRole("button", { name: button }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
 }
 
 describe("knowledge base", () => {
@@ -77,8 +84,8 @@ describe("knowledge base", () => {
     await user.upload(screen.getByLabelText("Document file"), file);
     await user.click(screen.getByRole("button", { name: "Upload" }));
 
-    expect(await screen.findByText(/Uploaded notes\.md \(3 chunks\)/)).toBeInTheDocument();
-    expect(await screen.findByRole("cell", { name: "notes.md" })).toBeInTheDocument();
+    expect(await screen.findByText(/Uploaded notes\.md\. It can now be used to answer questions/)).toBeInTheDocument();
+    expect(await screen.findByRole("cell", { name: /notes\.md/ })).toBeInTheDocument();
     const upload = calls.find((c) => c.method === "POST" && c.path === "/api/v1/documents")!;
     expect(upload.headers.Authorization).toBe(`Bearer ${TOKEN}`);
     expect(upload.headers["Content-Type"]).toBeUndefined(); // the browser sets the multipart boundary
@@ -129,12 +136,13 @@ describe("knowledge base", () => {
     const user = await openKnowledgeBase();
     const deleteButton = await screen.findByRole("button", { name: "Delete old-policy.md" });
 
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false);
     await user.click(deleteButton);
+    await answerDialog(user, "Cancel");
     expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(0);
+    expect(deleteButton).toHaveFocus(); // focus returns to where it was
 
-    confirm.mockReturnValueOnce(true);
     await user.click(deleteButton);
+    await answerDialog(user, "Delete document");
     expect(await screen.findByText("Deleted old-policy.md.")).toBeInTheDocument();
     const deletion = calls.find((c) => c.method === "DELETE")!;
     expect(deletion.path).toBe("/api/v1/documents/7");
@@ -155,8 +163,8 @@ describe("knowledge base", () => {
     });
     render(<App />);
     const user = await openKnowledgeBase();
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     await user.click(await screen.findByRole("button", { name: "Delete moved.md" }));
+    await answerDialog(user, "Delete document");
     expect(await screen.findByRole("alert")).toHaveTextContent("Document not found.");
     await waitFor(() => expect(screen.queryByText("moved.md")).not.toBeInTheDocument());
     expect(screen.getByText("kept.md")).toBeInTheDocument();
@@ -184,5 +192,83 @@ describe("knowledge base", () => {
     await user.click(screen.getByRole("button", { name: "Next" }));
     expect(await screen.findByText("21–40 of 45")).toBeInTheDocument();
     expect(calls.map((c) => c.path)).toContain("/api/v1/documents?limit=20&offset=20");
+  });
+
+  it("shows each document's title, a short description beneath it, and the file name as secondary text", async () => {
+    const handbook = {
+      ...doc(1, "sample_company_handbook.md", "folder"),
+      description: "Employees receive 20 days of annual paid leave per calendar year, with rules for requesting leave.",
+    };
+    const bench = {
+      ...doc(2, "dsid_0123456789abcdef0123456789abcdef__q3-pricing-review-notes.txt", "folder"),
+      source_type: "confluence",
+      description: "Notes from the quarterly pricing review, covering discount bands and open decisions.",
+    };
+    const noText = doc(3, "empty-scan.pdf", "upload"); // no description available
+    mockApi(documentsBackend([handbook, bench, noText]).routes);
+    render(<App />);
+    await openKnowledgeBase();
+
+    // 1./2. Title, then the description directly below it.
+    const title = await screen.findByText("Sample company handbook");
+    const description = screen.getByText(handbook.description);
+    expect(title.nextElementSibling).toBe(description);
+    expect(description.tagName).toBe("P");
+    expect(description).toHaveClass("doc-description");
+    // 3. The file name stays available, after the description and de-emphasized.
+    const file = screen.getByText("sample_company_handbook.md");
+    expect(description.nextElementSibling).toBe(file);
+    expect(file).toHaveClass("doc-file");
+    // Internal benchmark ids never appear in the title or description, only in the secondary file name.
+    expect(screen.getByText("Q3 pricing review notes")).toBeInTheDocument();
+    expect(screen.getByText(bench.description)).not.toHaveTextContent("dsid_");
+    // A document without a description simply has none (no placeholder text invented).
+    const emptyRow = screen.getByText("empty-scan.pdf").closest("td")!;
+    expect(within(emptyRow).queryByText((_, el) => el?.classList.contains("doc-description") ?? false)).toBeNull();
+  });
+
+  it("only shows descriptions of documents the server listed for this user", async () => {
+    // The list endpoint is already filtered by the server; a restricted document is simply not in it,
+    // so its description cannot appear anywhere. The UI never requests descriptions separately.
+    const visible = { ...doc(1, "company-policy.md", "folder"), description: "Company-wide travel policy for all employees." };
+    const calls = mockApi(documentsBackend([visible]).routes);
+    render(<App />);
+    await openKnowledgeBase();
+    expect(await screen.findByText(visible.description)).toBeInTheDocument();
+    expect(screen.queryByText(/Board compensation decisions/)).not.toBeInTheDocument();
+    const paths = calls.map((c) => c.path);
+    expect(paths.filter((p) => !p.startsWith("/api/v1/auth/")).every((p) => p.startsWith("/api/v1/documents?limit="))).toBe(true);
+  });
+
+  it("keeps long descriptions visually constrained", async () => {
+    const long = Array.from({ length: 60 }, (_, i) => `word${i}`).join(" ") + ".";
+    mockApi(documentsBackend([{ ...doc(1, "long.md", "folder"), description: long }]).routes);
+    render(<App />);
+    await openKnowledgeBase();
+    const description = await screen.findByText(/^word0 word1/);
+    expect(description).toHaveClass("doc-description"); // CSS clamps it to two lines
+    expect(description.textContent!.length).toBeLessThanOrEqual(240);
+    expect(description.textContent!.endsWith("…")).toBe(true);
+    expect(description.textContent).not.toContain("word59");
+  });
+
+  it("searches across every accessible document, not just the current page", async () => {
+    const many = Array.from({ length: 45 }, (_, i) => doc(i + 1, `file-${i + 1}.md`, "folder"));
+    const calls = mockApi(documentsBackend(many).routes);
+    render(<App />);
+    const user = await openKnowledgeBase();
+    await screen.findByText("1–20 of 45");
+
+    await user.type(screen.getByLabelText("Search documents"), "file 44");
+    expect(await screen.findByText("1 matching document")).toBeInTheDocument();
+    expect(within(screen.getByRole("table")).getByText("file-44.md")).toBeInTheDocument();
+    expect(screen.queryByText("1–20 of 45")).not.toBeInTheDocument(); // no pager while searching
+    // The list is read with the normal (server-filtered) endpoint; nothing else is sent.
+    const searchCalls = calls.filter((c) => c.path.startsWith("/api/v1/documents?limit=200"));
+    expect(searchCalls.length).toBeGreaterThanOrEqual(1);
+    expect(searchCalls.every((c) => !/tenant|q=|search/i.test(c.path))).toBe(true);
+
+    await user.clear(screen.getByLabelText("Search documents"));
+    expect(await screen.findByText("1–20 of 45")).toBeInTheDocument();
   });
 });

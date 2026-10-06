@@ -38,6 +38,7 @@ from sentence_transformers import SentenceTransformer
 
 from .access import DOCUMENT_ACCESS_FILTER, AccessScope
 from .chunking import CHUNK_OVERLAP, CHUNK_SIZE, TooManyChunks, chunk_document
+from .descriptions import describe
 from .ingest import store_document
 from .loader import ExtractionLimitExceeded, load_document
 
@@ -247,16 +248,27 @@ class DocumentInfo:
     origin: str
     chunk_count: int
     ingested_at: datetime
+    opening_passages: list[str] | None = None  # the first stored passages, only used to derive `description`
 
     @property
     def deletable(self) -> bool:
         return self.origin == UPLOAD_ORIGIN
 
+    @property
+    def description(self) -> str | None:
+        return describe(self.opening_passages, self.source_type)
 
+
+# Every caller adds the access filter (or a tenant filter) on d; the opening passages belong
+# to the same row, so a description never comes from a document the caller cannot read.
 _INFO_SELECT = """
     SELECT d.id, d.source, d.source_type, d.origin,
            (SELECT count(*) FROM document_chunks c WHERE c.document_id = d.id AND c.tenant_id = d.tenant_id),
-           d.ingested_at
+           d.ingested_at,
+           (SELECT array_agg(o.text ORDER BY o.chunk_index)
+              FROM (SELECT c.text, c.chunk_index FROM document_chunks c
+                     WHERE c.document_id = d.id AND c.tenant_id = d.tenant_id
+                     ORDER BY c.chunk_index LIMIT 3) o)
     FROM documents d
 """
 

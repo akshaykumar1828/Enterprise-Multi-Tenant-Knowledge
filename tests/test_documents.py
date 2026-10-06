@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.helpers import bearer, login, make_user, new_password, unique_email  # noqa: I001  (test JWT secret first)
+from tests.helpers import SAMPLE_PDF_PATH, bearer, login, make_user, new_password, unique_email  # noqa: I001  (test JWT secret first)
 
 import psycopg
 from fastapi.testclient import TestClient
@@ -28,7 +28,7 @@ from src.rag.tenants import DEFAULT_TENANT, get_tenant
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DOCS = "/api/v1/documents"
 QUERY = "/api/v1/query"
-SAMPLE_PDF = (PROJECT_ROOT / "data" / "documents" / "sample_it_security_policy.pdf").read_bytes()
+SAMPLE_PDF = SAMPLE_PDF_PATH.read_bytes()
 
 
 def markdown(secret: str) -> bytes:
@@ -294,7 +294,7 @@ class DocumentTests(unittest.TestCase):
             self.assertEqual(body["total"], 3)
             self.assertEqual([d["id"] for d in body["items"]], list(reversed(ids)))
             self.assertEqual(set(body["items"][0]), {"id", "filename", "source_type", "origin", "chunk_count",
-                                                     "ingested_at", "deletable"})
+                                                     "ingested_at", "deletable", "description"})
             page = self.client.get(DOCS, headers=bearer(self.tokens["a"]), params={"limit": 2, "offset": 2}).json()
             self.assertEqual((page["total"], len(page["items"]), page["items"][0]["id"]), (3, 1, ids[0]))
             self.assertEqual(self.client.get(DOCS, headers=bearer(self.tokens["b"])).json()["total"], 0)

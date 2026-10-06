@@ -9,7 +9,7 @@ Run from the project root (uses no Gemini quota):
 
 import unittest
 
-from tests.helpers import bearer, login, make_user  # noqa: I001  (sets the test JWT secret first)
+from tests.helpers import bearer, ensure_sample_corpus, login, make_user  # noqa: I001  (sets the test JWT secret first)
 
 from fastapi.testclient import TestClient
 from google.genai import errors as genai_errors
@@ -39,6 +39,7 @@ class ApiTests(unittest.TestCase):
         cls.client = cls.client_context.__enter__()  # runs the lifespan: loads models once
         cls.pipeline = app.state.pipeline
         cls.real_client = cls.pipeline.gemini_client
+        ensure_sample_corpus(cls.pipeline.embedding_model)  # the handbook + PDF policy these tests ask about
         with connect() as conn:
             cls.user, password = make_user(conn, get_tenant(conn, DEFAULT_TENANT).id, "api-test")
         cls.client.headers.update(bearer(login(cls.client, cls.user.email, password)))

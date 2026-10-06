@@ -9,15 +9,10 @@ import type {
   KnowledgeDocument,
   QueryRequest,
   QueryResponse,
-  RegisterRequest,
   Role,
   TokenResponse,
-  User,
   Visibility,
 } from "./types";
-
-export const registerOrganization = (request: RegisterRequest) =>
-  apiRequest<User>("/api/v1/auth/register", { method: "POST", body: request });
 
 export const login = (email: string, password: string) =>
   apiRequest<TokenResponse>("/api/v1/auth/login", { method: "POST", body: { email, password } });
@@ -40,6 +35,12 @@ export function uploadDocument(token: string, file: File) {
 export const deleteDocument = (token: string, id: number) =>
   apiRequest<void>(`/api/v1/documents/${id}`, { method: "DELETE", token });
 
+/** The signed-in user changes their own password (the current one is required). */
+export const changePassword = (token: string, currentPassword: string, newPassword: string) =>
+  apiRequest<void>("/api/v1/auth/change-password", {
+    method: "POST", body: { current_password: currentPassword, new_password: newPassword }, token,
+  });
+
 // Admin API. The server checks on every call that the token's user is currently an
 // admin of their own company; nothing here (tenant, role, flags) decides access.
 const ADMIN = "/api/v1/admin";
@@ -57,6 +58,15 @@ export const deleteDepartment = (token: string, id: number) =>
 
 export const listCompanyUsers = (token: string, limit: number, offset: number) =>
   apiRequest<CompanyUserList>(`${ADMIN}/users?limit=${limit}&offset=${offset}`, { token });
+
+/** A new employee of the admin's own company (the server never accepts a tenant or role here). */
+export const createEmployee = (
+  token: string,
+  employee: { email: string; password: string; display_name?: string; department_ids: number[] },
+) => apiRequest<CompanyUser>(`${ADMIN}/users`, { method: "POST", body: employee, token });
+
+export const deleteUser = (token: string, userId: number) =>
+  apiRequest<void>(`${ADMIN}/users/${userId}`, { method: "DELETE", token });
 
 export const setUserRole = (token: string, userId: number, role: Role) =>
   apiRequest<CompanyUser>(`${ADMIN}/users/${userId}/role`, { method: "PUT", body: { role }, token });

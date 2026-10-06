@@ -11,7 +11,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from tests.helpers import bearer, login, make_user, new_password, unique_email  # noqa: I001  (test JWT secret first)
+from tests.helpers import bearer, ensure_sample_corpus, login, make_user, new_password, unique_email  # noqa: I001  (test JWT secret first)
 
 import jwt
 from fastapi.testclient import TestClient
@@ -47,6 +47,7 @@ class AuthTests(unittest.TestCase):
         cls.client_context = TestClient(app)
         cls.client = cls.client_context.__enter__()
         cls.pipeline = app.state.pipeline
+        ensure_sample_corpus(cls.pipeline.embedding_model)  # the handbook + PDF policy these tests ask about
         cls.conn = connect()
         register_vector(cls.conn)
         cls.default = get_tenant(cls.conn, DEFAULT_TENANT)

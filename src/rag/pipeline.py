@@ -24,8 +24,8 @@ from .citations import check_citations
 from .db import connect_app
 from .embeddings import MODEL_NAME as EMBEDDING_MODEL_NAME
 from .embeddings import load_model
-from .llm import MODEL_NAME as LLM_MODEL_NAME
 from .llm import LLMError, create_client, generate_answer
+from .llm import model_name as llm_model_name
 from .retriever import RERANKER_MODEL, RerankingRetriever, SearchResult, load_reranker
 
 
@@ -61,6 +61,8 @@ class RAGPipeline:
             self.gemini_error: str | None = None
         except LLMError as error:
             self.gemini_client, self.gemini_error = None, str(error)
+        # The configured answer model (local Ollama model by default, or Gemini).
+        self.llm_model_name = llm_model_name()
         # Kept as an attribute so tests can substitute a fake and spend no Gemini quota.
         self.generate = generate_answer
         # One request at a time on the GPU models (search and upload embedding);
@@ -70,7 +72,6 @@ class RAGPipeline:
     # --- descriptive info -------------------------------------------------
     embedding_model_name = EMBEDDING_MODEL_NAME
     reranker_model_name = RERANKER_MODEL
-    llm_model_name = LLM_MODEL_NAME
 
     @property
     def embedding_device(self) -> str:

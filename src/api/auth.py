@@ -16,15 +16,23 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 
 import jwt
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from src.rag.access import AccessScope, load_access_scope
 from src.rag.db import connect_app
-from src.rag.users import User, authenticate, get_user, register_organization
+from src.rag.users import User, authenticate, change_password, get_user, register_organization
 
 from .rate_limit import client_ip, email_key, enforce
-from .schemas import CurrentUserResponse, DepartmentInfo, LoginRequest, RegisterRequest, TokenResponse, UserResponse
+from .schemas import (
+    CurrentUserResponse,
+    DepartmentInfo,
+    LoginRequest,
+    PasswordChangeRequest,
+    RegisterRequest,
+    TokenResponse,
+    UserResponse,
+)
 from .settings import registration_open
 
 ALGORITHM = "HS256"
@@ -126,6 +134,25 @@ def login(body: LoginRequest, request: Request) -> TokenResponse:
         user = authenticate(conn, body.email, body.password)
     token, expires_in = create_access_token(user.id)
     return TokenResponse(access_token=token, expires_in=expires_in)
+
+
+@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+def change_own_password(body: PasswordChangeRequest, user: AuthenticatedUser = Depends(get_current_user)) -> Response:
+    """The signed-in user changes their own password (the current password is required).
+
+    Rate limited like login (per user), so the current password cannot be guessed through
+    this route. A wrong current password is a 400 (not 401: the session itself is valid).
+    """
+    enforce("LOGIN", f"password:{user.id}", "Too many attempts. Please wait before trying again.")
+    if body.new_password == body.current_password:
+        raise PasswordUnchanged()
+    with connect_app() as conn:
+        change_password(conn, user.id, body.current_password, body.new_password)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+class PasswordUnchanged(Exception):
+    """Turned into 422 by the app's exception handler."""
 
 
 @router.get("/me", response_model=CurrentUserResponse)

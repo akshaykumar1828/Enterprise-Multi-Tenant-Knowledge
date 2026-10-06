@@ -144,7 +144,9 @@ class UploadAccessTests(unittest.TestCase):
         """201 with an ordinary new document: nothing about the unreadable original."""
         self.assertEqual(response.status_code, 201, response.text)
         body = response.json()
-        self.assertEqual(set(body), {"id", "filename", "source_type", "origin", "chunk_count", "ingested_at", "deletable"})
+        # The additive "description" is derived from this new document's own (just uploaded) text.
+        self.assertEqual(set(body), {"id", "filename", "source_type", "origin", "chunk_count", "ingested_at", "deletable",
+                                     "description"})
         self.assertNotEqual(body["id"], self.docs[hidden_name])
         self.assertNotIn("error", body)
 

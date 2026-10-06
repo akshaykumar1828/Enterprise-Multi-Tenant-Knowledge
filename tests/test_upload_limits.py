@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.helpers import bearer, login, make_user  # noqa: I001  (sets the test JWT secret first)
+from tests.helpers import SAMPLE_PDF_PATH, bearer, login, make_user  # noqa: I001  (sets the test JWT secret first)
 
 from fastapi.testclient import TestClient
 from pypdf import PageObject, PdfReader, PdfWriter
@@ -32,9 +32,9 @@ from src.rag.tenants import get_or_create_tenant
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DOCS = "/api/v1/documents"
-SAMPLE_PDF = (PROJECT_ROOT / "data" / "documents" / "sample_it_security_policy.pdf").read_bytes()
-SAMPLE_PDF_PAGES = len(PdfReader(PROJECT_ROOT / "data" / "documents" / "sample_it_security_policy.pdf").pages)
-SAMPLE_PDF_CHARS = sum(len(p.text) for p in load_document(PROJECT_ROOT / "data" / "documents" / "sample_it_security_policy.pdf").pages)
+SAMPLE_PDF = SAMPLE_PDF_PATH.read_bytes()
+SAMPLE_PDF_PAGES = len(PdfReader(SAMPLE_PDF_PATH).pages)
+SAMPLE_PDF_CHARS = sum(len(p.text) for p in load_document(SAMPLE_PDF_PATH).pages)
 UNLIMITED_QUOTAS = {"TENANT_MAX_DOCUMENTS": "0", "TENANT_MAX_UPLOAD_BYTES": "0"}
 
 
@@ -150,7 +150,7 @@ class UploadLimitTests(unittest.TestCase):
                 embed.assert_not_called()
 
     def test_pdf_text_limit_stops_extraction_early(self):
-        first_page_chars = len(load_document(PROJECT_ROOT / "data" / "documents" / "sample_it_security_policy.pdf").pages[0].text)
+        first_page_chars = len(load_document(SAMPLE_PDF_PATH).pages[0].text)
         with mock.patch.dict(os.environ, {"UPLOAD_MAX_TEXT_CHARS": str(first_page_chars)}):
             with mock.patch.object(PageObject, "extract_text", autospec=True,
                                    side_effect=PageObject.extract_text) as extract:

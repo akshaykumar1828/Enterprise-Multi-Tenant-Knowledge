@@ -11,8 +11,8 @@ By default every supported file in data/documents/ is searched together;
 --document restricts the search to a single file.
 
 Usage (from the project root):
-    .venv\\Scripts\\python.exe -m src.rag "How many annual leave days do employees receive?"
-    .venv\\Scripts\\python.exe -m src.rag "..." --document data\\documents\\sample_it_security_policy.pdf
+    .venv\\Scripts\\python.exe -m src.rag "What home-office stipend do new employees get?"
+    .venv\\Scripts\\python.exe -m src.rag "..." --document <relative path of one stored document>
     .venv\\Scripts\\python.exe -m src.rag "..." --retrieve-only   # no Gemini call
     .venv\\Scripts\\python.exe -m src.rag "..." --no-rerank       # vector-only baseline
 """
@@ -33,7 +33,7 @@ from .db import connect, ensure_schema
 from .embeddings import MODEL_NAME, describe_device, load_model
 from .ingest import sync_documents
 from .llm import LLMError, create_client, generate_answer
-from .llm import MODEL_NAME as LLM_MODEL_NAME
+from .llm import model_name as llm_model_name
 from .loader import LOCAL_SOURCE_TYPE, load_document, load_documents
 from .retriever import RERANKER_MODEL, PgVectorRetriever, RerankingRetriever, SearchResult, load_reranker
 from .tenants import DEFAULT_TENANT, TenantNotFound, get_tenant
@@ -213,7 +213,7 @@ def main() -> int:
                 print(f"Error: no matching documents stored for tenant {tenant.slug!r}", file=sys.stderr)
                 return 1
         if not args.retrieve_only:
-            print(f"LLM:      {LLM_MODEL_NAME}")
+            print(f"LLM:      {llm_model_name()}")
 
         # Operator tool: full access to the chosen tenant, narrowed to the listed documents.
         scope = AccessScope.operator(tenant.id)

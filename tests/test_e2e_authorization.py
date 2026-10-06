@@ -318,7 +318,8 @@ class EndToEndAuthorizationTests(unittest.TestCase):
         hidden = self.client.post(DOCS, headers=bearer(self.tokens["eng"]), files={"file": ("copy.md", payroll, "text/markdown")})
         self.assertEqual(hidden.status_code, 201, hidden.text)
         self.assertNotEqual(hidden.json()["id"], payroll_id)
-        self.assertEqual(set(hidden.json()), {"id", "filename", "source_type", "origin", "chunk_count", "ingested_at", "deletable"})
+        self.assertEqual(set(hidden.json()), {"id", "filename", "source_type", "origin", "chunk_count", "ingested_at", "deletable",
+                                              "description"})
 
         # Delete: an unreadable document looks exactly like a missing one and is untouched.
         missing = self.client.delete(f"{DOCS}/{2**62}", headers=bearer(self.tokens["eng"]))

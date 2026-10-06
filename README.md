@@ -9,7 +9,8 @@ user sees only the documents their role and departments allow.
 - **RAG:**
   - local embeddings (`all-MiniLM-L6-v2`) stored in PostgreSQL + pgvector;
   - cross-encoder reranking (`ms-marco-MiniLM-L6-v2`), keeping at most 2 chunks per document;
-  - answers from Gemini (`gemini-3.8-flash`) with checked citations;
+  - answers from a local model through Ollama (`gemma3:4b`, free, no usage limits, documents never leave the
+    server), or optionally Gemini (`gemini-3.8-flash`, free tier), with checked citations;
   - a retrieve-only mode that makes no LLM call.
 - **Multi-tenant.** Every row is tenant-scoped; composite foreign keys block cross-tenant links.
 - **Authorization:**
@@ -37,7 +38,7 @@ py -3.12 -m venv .venv
 # PGPASSWORD), JWT_SECRET_KEY and optionally GEMINI_API_KEY. deploy\env.production.example lists every setting.
 # The tests read .env.test or .env.development and never a file containing APP_ENV=production.
 .\.venv\Scripts\python.exe -m src.rag.ingest                                   # load data/documents into the default tenant
-.\.venv\Scripts\python.exe -m src.rag "How many annual leave days do employees receive?" --retrieve-only
+.\.venv\Scripts\python.exe -m src.rag "What home-office stipend do new employees get?" --retrieve-only
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"        # backend tests (isolated database copy)
 cd frontend; npm install; npm test; npm run dev
 ```
@@ -65,15 +66,15 @@ Production deployment is a separate procedure; see the documentation below.
 | `frontend/` | React single-page app |
 | `deploy/` | Caddyfile, production env template, Windows task scripts, deployment and backup guides |
 | `tests/` | Backend tests (run against a throwaway copy of the database) |
-| `data/documents/` | Folder corpus for the default tenant (1,224 documents) |
+| `data/documents/` | Folder corpus for the default tenant (1,222 documents) |
 | `docs/` | Architecture, authorization and operations documentation |
 
 ## Status (2026-10-01)
 
 Production is live on a single machine:
-- 1 tenant, with 1,224 documents and 22,018 chunks.
+- 1 tenant, with 1,222 documents and 21,999 chunks (the two sample files were removed on 2026-10-03).
 - 8 departments.
-- Access applied and verified: 33 company-wide, 1,166 department, 9 admin-only and 16 pending review.
+- Access applied and verified: 31 company-wide, 1,166 department, 9 admin-only and 16 pending review.
 - Tests pass: 218 backend and 39 frontend.
 - Current git checkpoint: `1992fbf` ("Checkpoint: complete production authorization rollout").
 - Open items are listed in [docs/OPERATIONS.md](docs/OPERATIONS.md#open-items).

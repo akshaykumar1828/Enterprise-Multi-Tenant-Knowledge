@@ -16,6 +16,7 @@ from datetime import datetime
 import psycopg
 
 from .access import ADMIN, EMPLOYEE
+from .users import create_user
 
 ROLES = (ADMIN, EMPLOYEE)
 COMPANY, DEPARTMENTS = "company", "departments"
@@ -161,6 +162,51 @@ def get_company_user(conn: psycopg.Connection, tenant_id: int, user_id: int) -> 
     if row is None:
         raise not_found("user")
     return _company_user(row)
+
+
+def create_employee(
+    conn: psycopg.Connection, tenant_id: int, email: str, password: str, display_name: str | None,
+    department_ids: list[int],
+) -> CompanyUser:
+    """Create an employee of the admin's own company, optionally in some departments, all or nothing.
+
+    New accounts are always employees; an admin can promote one afterwards. Departments of
+    another tenant behave like unknown ones (404). A taken email raises EmailAlreadyRegistered (409).
+    """
+    unique = sorted(set(department_ids))
+    with conn.transaction():
+        if unique:
+            found = {r[0] for r in conn.execute(
+                "SELECT id FROM departments WHERE tenant_id = %s AND id = ANY(%s)", (tenant_id, unique))}
+            if found != set(unique):
+                raise not_found("department")
+        user = create_user(conn, tenant_id, email, password, display_name)
+        for department_id in unique:
+            conn.execute("INSERT INTO user_departments (tenant_id, user_id, department_id) VALUES (%s, %s, %s)",
+                         (tenant_id, user.id, department_id))
+    return get_company_user(conn, tenant_id, user.id)
+
+
+def delete_user(conn: psycopg.Connection, tenant_id: int, user_id: int, acting_user_id: int) -> None:
+    """Delete a user of the admin's own company. Their memberships go with them (foreign keys);
+    documents they uploaded stay (only uploaded_by is cleared). Their existing tokens stop working
+    on the next request, because every request reloads the user from the database.
+
+    Refused: deleting yourself, and deleting the company's last admin.
+    """
+    if user_id == acting_user_id:
+        raise AdminError(409, "cannot_delete_self", "You cannot delete your own account.")
+    with conn.transaction():
+        # Same locking as set_user_role, so concurrent changes cannot remove the last admin.
+        admins = [r[0] for r in conn.execute(
+            "SELECT id FROM users WHERE tenant_id = %s AND role = %s ORDER BY id FOR UPDATE", (tenant_id, ADMIN))]
+        current = conn.execute("SELECT role FROM users WHERE tenant_id = %s AND id = %s FOR UPDATE",
+                               (tenant_id, user_id)).fetchone()
+        if current is None:
+            raise not_found("user")
+        if current[0] == ADMIN and admins == [user_id]:
+            raise AdminError(409, "last_admin", "The company must keep at least one admin.")
+        conn.execute("DELETE FROM users WHERE tenant_id = %s AND id = %s", (tenant_id, user_id))
 
 
 def set_user_role(conn: psycopg.Connection, tenant_id: int, user_id: int, role: str) -> None:

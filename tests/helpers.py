@@ -25,7 +25,34 @@ import src.api.main as _api_main  # noqa: E402
 # configuration, so the test settings above are the only ones used.
 _api_main.load_dotenv = lambda *args, **kwargs: False
 
+from pathlib import Path  # noqa: E402
+
 from src.rag.users import User, create_user  # noqa: E402
+
+SAMPLE_CORPUS = Path(__file__).resolve().parent / "fixtures" / "sample_corpus"
+SAMPLE_PDF_PATH = SAMPLE_CORPUS / "sample_it_security_policy.pdf"
+
+
+def ensure_sample_corpus(model) -> None:
+    """Load the two fixture documents (a handbook and a PDF policy) into the default tenant of
+    the THROWAWAY test database, as company-wide folder documents. They are test data only and
+    are not part of the production corpus. Idempotent: unchanged files are skipped."""
+    from pgvector.psycopg import register_vector
+
+    from src.rag.chunking import CHUNK_OVERLAP, CHUNK_SIZE, chunk_document
+    from src.rag.db import connect
+    from src.rag.ingest import sync_documents
+    from src.rag.loader import load_documents
+    from src.rag.tenants import DEFAULT_TENANT, get_tenant
+
+    if "_testrun_" not in os.environ.get("PGDATABASE", ""):
+        raise RuntimeError("refusing to load test fixtures outside the throwaway test database")
+    documents = load_documents(SAMPLE_CORPUS)
+    with connect() as conn:
+        register_vector(conn)
+        stats = sync_documents(conn, model, documents, {d.relative_path: chunk_document(d) for d in documents},
+                               CHUNK_SIZE, CHUNK_OVERLAP, tenant_id=get_tenant(conn, DEFAULT_TENANT).id)
+    assert not stats.failed, stats.failed
 
 
 def new_password() -> str:

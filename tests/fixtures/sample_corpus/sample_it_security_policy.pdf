@@ -1,0 +1,104 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R 6 0 R 8 0 R 10 0 R] /Count 4 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 469 >>
+stream
+BT
+/F1 11 Tf
+16 TL
+72 740 Td
+(Brightfield Analytics - IT Security Policy) Tj T*
+(This is a synthetic test document. Brightfield Analytics is a fictional company.) Tj T*
+() Tj T*
+(Section 1: Passwords) Tj T*
+(Passwords for company accounts must be at least 14 characters long.) Tj T*
+(Passwords must be changed every 180 days.) Tj T*
+(The last 10 passwords of an account cannot be reused.) Tj T*
+(Passwords must never be shared, including with the IT helpdesk.) Tj T*
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 379 >>
+stream
+BT
+/F1 11 Tf
+16 TL
+72 740 Td
+(Section 2: Multi-Factor Authentication and VPN) Tj T*
+(Multi-factor authentication is required for every company system.) Tj T*
+(System administrators must use a hardware security key as their second factor.) Tj T*
+(VPN sessions disconnect automatically after 8 hours.) Tj T*
+(Connecting to the VPN from a personal device is not permitted.) Tj T*
+ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 356 >>
+stream
+BT
+/F1 11 Tf
+16 TL
+72 740 Td
+(Section 3: Data Retention) Tj T*
+(Customer records are retained for 7 years after the end of the customer contract.) Tj T*
+(Application logs are retained for 400 days.) Tj T*
+(Backups of deleted data are permanently purged within 35 days.) Tj T*
+(Retention periods may only be changed by the Data Protection Officer.) Tj T*
+ET
+endstream
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 11 0 R >>
+endobj
+11 0 obj
+<< /Length 366 >>
+stream
+BT
+/F1 11 Tf
+16 TL
+72 740 Td
+(Section 4: Incident Reporting) Tj T*
+(Security incidents must be reported within 1 hour of discovery.) Tj T*
+(Incidents are reported to the Security Operations Center at extension 4400.) Tj T*
+(Employees must not attempt to investigate an incident on their own.) Tj T*
+(A written incident summary is due within 3 working days.) Tj T*
+ET
+endstream
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000134 00000 n 
+0000000204 00000 n 
+0000000330 00000 n 
+0000000850 00000 n 
+0000000976 00000 n 
+0000001406 00000 n 
+0000001532 00000 n 
+0000001939 00000 n 
+0000002067 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R >>
+startxref
+2485
+%%EOF

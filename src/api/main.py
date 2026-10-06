@@ -19,6 +19,7 @@ HTTP requests to it and pipeline errors to HTTP responses.
 
 import logging
 import re
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -32,14 +33,14 @@ from psycopg_pool import PoolTimeout
 
 from src.rag.admin import AdminError
 from src.rag.db import close_app_pool, connect_app, open_app_pool, pool_settings
-from src.rag.llm import LLMError
+from src.rag.llm import LLMError, warm_up
 from src.rag.pipeline import CorpusEmpty, GenerationUnavailable, RAGPipeline
 from src.rag.uploads import UploadError, max_upload_bytes
-from src.rag.users import EmailAlreadyRegistered, InvalidCredentials
+from src.rag.users import EmailAlreadyRegistered, InvalidCredentials, WrongCurrentPassword
 
 from .admin import AdminRequired
 from .admin import router as admin_router
-from .auth import AuthenticatedUser, AuthError, RegistrationClosed, get_current_user, secret_key
+from .auth import AuthenticatedUser, AuthError, PasswordUnchanged, RegistrationClosed, get_current_user, secret_key
 from .auth import router as auth_router
 from .documents import router as documents_router
 from .logging_setup import configure_logging, log_requests_enabled, request_id_from, request_id_var
@@ -86,6 +87,11 @@ async def lifespan(app: FastAPI):
             check_production_database(connect_app)
             log.info("starting in production mode (API docs disabled, minimal health output)")
         app.state.pipeline = RAGPipeline()
+        if is_production():
+            # Load the local answer model in the background so the first question doesn't wait for it.
+            # Startup never waits on it, and a missing Ollama only means the first answer loads the model.
+            threading.Thread(target=warm_up, args=(app.state.pipeline.gemini_client,), daemon=True,
+                             name="ollama-warm-up").start()
         yield
     finally:
         close_app_pool()
@@ -263,6 +269,17 @@ def auth_error(request: Request, error: AuthError) -> JSONResponse:
 @app.exception_handler(RateLimited)
 def rate_limited(request: Request, error: RateLimited) -> JSONResponse:
     return error_response(429, error.code, error.message, retry_after=error.retry_after_seconds)
+
+
+@app.exception_handler(WrongCurrentPassword)
+def wrong_current_password(request: Request, error: WrongCurrentPassword) -> JSONResponse:
+    # 400, not 401: the session is valid, only the "current password" field is wrong.
+    return error_response(400, "wrong_current_password", "Your current password is incorrect.")
+
+
+@app.exception_handler(PasswordUnchanged)
+def password_unchanged(request: Request, error: PasswordUnchanged) -> JSONResponse:
+    return error_response(422, "password_unchanged", "The new password must be different from the current one.")
 
 
 @app.exception_handler(RegistrationClosed)

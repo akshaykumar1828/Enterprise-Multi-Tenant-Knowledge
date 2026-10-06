@@ -181,9 +181,39 @@ class DocumentAccessTests(unittest.TestCase):
         self.assertEqual(set(body), {"total", "limit", "offset", "items"})
         self.assertEqual((body["limit"], body["offset"]), (200, 0))
         item = next(i for i in body["items"] if i["filename"] == "finance.md")
-        self.assertEqual(set(item), {"id", "filename", "source_type", "origin", "chunk_count", "ingested_at", "deletable"})
+        # The original fields, plus the additive (nullable) description.
+        self.assertEqual(set(item), {"id", "filename", "source_type", "origin", "chunk_count", "ingested_at", "deletable",
+                                     "description"})
         self.assertEqual((item["id"], item["origin"], item["deletable"]), (self.docs["finance.md"], "upload", True))
         self.assertEqual(self.client.get(DOCS).status_code, 401)
+
+    def test_descriptions_come_only_from_readable_documents(self):
+        secrets_by_doc = {"finance.md": f"FINANCE-{SUFFIX}", "orphan.md": f"ORPHAN-{SUFFIX}",
+                          "company.md": f"COMPANY-{SUFFIX}"}
+        zero = "[" + ",".join(["0"] * 384) + "]"
+        a = self.tenant["a"]
+        inserted = []
+        for name, secret in secrets_by_doc.items():
+            text = f"{name}\nThis passage describes the {name} document and carries the marker {secret} for this test."
+            inserted.append(self.conn.execute(
+                """INSERT INTO document_chunks (tenant_id, document_id, chunk_id, chunk_index, text, start_char, end_char,
+                                               embedding) VALUES (%s, %s, %s, 0, %s, 0, %s, %s::vector) RETURNING id""",
+                (a, self.docs[name], f"{name}#0-{SUFFIX}", text, len(text), zero)).fetchone()[0])
+        try:
+            for user, readable in (("finance", {"finance.md", "company.md"}), ("engineering", {"company.md"}),
+                                   ("nobody", {"company.md"}), ("admin", set(secrets_by_doc))):
+                with self.subTest(user=user):
+                    raw = self.client.get(DOCS, headers=bearer(self.tokens[user]), params={"limit": 200}).text
+                    for name, secret in secrets_by_doc.items():
+                        # A description only ever appears with its own (readable) document.
+                        self.assertEqual(secret in raw, name in readable, (user, name))
+                    items = {i["filename"]: i for i in self.listing(user)["items"]}
+                    for name in readable:
+                        self.assertIn(secrets_by_doc[name], items[name]["description"])
+                        self.assertTrue(items[name]["description"].startswith("This passage describes"))
+            self.assertIsNone(next(i for i in self.listing("admin")["items"] if i["filename"] == "engineering.md")["description"])
+        finally:
+            self.conn.execute("DELETE FROM document_chunks WHERE id = ANY(%s)", (inserted,))
 
     # --- delete: an unreadable document behaves exactly like a missing one -------------------------
     def test_deleting_an_unreadable_document_looks_like_not_found(self):

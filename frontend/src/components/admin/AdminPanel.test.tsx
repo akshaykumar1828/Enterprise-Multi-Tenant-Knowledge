@@ -55,7 +55,24 @@ function adminBackend(me: CurrentUser = ADMIN_USER) {
       state.departments = state.departments.filter((d) => d.id !== id);
       return { status: 204, body: null };
     }),
+    "DELETE /api/v1/admin/users/:id": admin((call) => {
+      const id = idAt(call, 1);
+      if (id === state.me.id) return error(409, "cannot_delete_self", "You cannot delete your own account.");
+      if (!state.users.some((u) => u.id === id)) return error(404, "user_not_found", "User not found.");
+      state.users = state.users.filter((u) => u.id !== id);
+      return { status: 204, body: null };
+    }),
     "GET /api/v1/admin/users": admin(() => ({ status: 200, body: { total: state.users.length, limit: 50, offset: 0, items: state.users } })),
+    "POST /api/v1/admin/users": admin((call) => {
+      const body = call.body as { email: string; password: string; display_name?: string; department_ids: number[] };
+      if (state.users.some((u) => u.email === body.email)) {
+        return error(409, "email_already_registered", "An account with this email already exists.");
+      }
+      const created: CompanyUser = { id: 3 + state.users.length, email: body.email, display_name: body.display_name ?? null,
+                                     role: "employee", department_ids: body.department_ids, created_at: "2026-10-03T10:00:00Z" };
+      state.users.push(created);
+      return { status: 201, body: created };
+    }),
   };
   // Parameterized user and document routes (matched by the fetch mock below).
   const dynamic = (call: RecordedCall): Reply | null => {
@@ -122,12 +139,29 @@ async function logIn(user = userEvent.setup()) {
   return user;
 }
 
-async function openAdmin(view?: "Users" | "Document access") {
+async function openAdmin(view?: "Users" | "Document Access") {
   const user = await logIn();
   await user.click(screen.getByRole("button", { name: "Admin" }));
   await screen.findByRole("heading", { name: "Departments" });
-  if (view) await user.click(screen.getByRole("button", { name: view }));
+  if (view) await user.click(screen.getByRole("tab", { name: view }));
   return user;
+}
+
+/** Open the "New department" form and fill it (the slug is suggested from the name; replace it if given). */
+async function fillNewDepartment(user: ReturnType<typeof userEvent.setup>, name: string, slug?: string) {
+  await user.click(screen.getByRole("button", { name: "New department" }));
+  await user.type(screen.getByLabelText("Name"), name);
+  if (slug !== undefined) {
+    await user.clear(screen.getByLabelText("Slug"));
+    await user.type(screen.getByLabelText("Slug"), slug);
+  }
+}
+
+/** Answer a confirmation dialog. */
+async function answerDialog(user: ReturnType<typeof userEvent.setup>, title: RegExp, button: string) {
+  const dialog = await screen.findByRole("alertdialog", { name: title });
+  await user.click(within(dialog).getByRole("button", { name: button }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
 }
 
 const adminCalls = (calls: RecordedCall[]) => calls.filter((c) => c.path.startsWith("/api/v1/admin"));
@@ -139,7 +173,7 @@ describe("admin section visibility", () => {
     const user = await logIn();
     expect(screen.queryByRole("button", { name: "Admin" })).not.toBeInTheDocument();
     expect(screen.getByText(/Employee/)).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Knowledge base" }));
+    await user.click(screen.getByRole("button", { name: "Documents" }));
     expect(await screen.findByRole("button", { name: "Upload" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Manage access/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /Departments|Users/ })).not.toBeInTheDocument();
@@ -158,6 +192,77 @@ describe("admin section visibility", () => {
     expect(adminCalls(calls).every((c) => c.headers.Authorization === `Bearer ${TOKEN}`)).toBe(true);
   });
 
+  it("admin sections are keyboard-navigable tabs", async () => {
+    mockAdmin(adminBackend());
+    render(<App />);
+    const user = await openAdmin();
+    const departments = screen.getByRole("tab", { name: "Departments" });
+    expect(departments).toHaveAttribute("aria-selected", "true");
+    departments.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(screen.getByRole("tab", { name: "Users" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Users" })).toHaveFocus();
+    expect(await screen.findByRole("heading", { name: /Users/ })).toBeInTheDocument();
+    await user.keyboard("{ArrowLeft}{ArrowLeft}");
+    expect(screen.getByRole("tab", { name: "Document Access" })).toHaveAttribute("aria-selected", "true");
+    await user.keyboard("{Home}");
+    expect(screen.getByRole("tab", { name: "Departments" })).toHaveFocus();
+    await user.keyboard("{End}");
+    expect(screen.getByRole("tab", { name: "Document Access" })).toHaveFocus();
+  });
+
+  it("shows exactly three tabs, Departments first, each with its own panel", async () => {
+    const calls = mockAdmin(adminBackend());
+    render(<App />);
+    await openAdmin();
+    const tabs = within(screen.getByRole("tablist", { name: "Administration sections" })).getAllByRole("tab");
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["Departments", "Users", "Document Access"]);
+    expect(tabs.map((tab) => tab.getAttribute("aria-selected"))).toEqual(["true", "false", "false"]);
+    for (const tab of tabs) {
+      const panel = document.getElementById(tab.getAttribute("aria-controls")!)!;
+      expect(panel).toHaveAttribute("role", "tabpanel");
+      expect(panel).toHaveAttribute("aria-labelledby", tab.id);
+    }
+    expect(screen.getByRole("tabpanel", { name: "Departments" })).toBeVisible();
+    // Users and Document Access load nothing until they are opened.
+    expect(calls.some((c) => c.path.startsWith("/api/v1/admin/users"))).toBe(false);
+    expect(calls.some((c) => c.path.startsWith("/api/v1/documents"))).toBe(false);
+  });
+
+  it("renders the Users and Document Access screens", async () => {
+    mockAdmin(adminBackend());
+    render(<App />);
+    const user = await openAdmin("Users");
+    const usersPanel = screen.getByRole("tabpanel", { name: "Users" });
+    expect(await within(usersPanel).findByRole("heading", { name: /Users \(2\)/ })).toBeInTheDocument();
+    expect(within(usersPanel).getByRole("columnheader", { name: "Role" })).toBeInTheDocument();
+    expect(within(usersPanel).getByText("alice@example.com")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Document Access" }));
+    const accessPanel = screen.getByRole("tabpanel", { name: "Document Access" });
+    expect(within(accessPanel).getByRole("heading", { name: "Document access" })).toBeInTheDocument();
+    expect(await within(accessPanel).findByRole("button", { name: "Manage access for budget.md" })).toBeInTheDocument();
+    expect(within(accessPanel).getByLabelText("Search documents")).toBeInTheDocument();
+  });
+
+  it("keeps each tab's state when switching away and back", async () => {
+    const calls = mockAdmin(adminBackend());
+    render(<App />);
+    const user = await openAdmin("Document Access");
+    await user.click(await screen.findByRole("button", { name: "Manage access for budget.md" }));
+    await screen.findByRole("form", { name: "Access for budget.md" });
+    await user.click(screen.getByLabelText("Only selected departments (and admins)")); // unsaved choice
+
+    await user.click(screen.getByRole("tab", { name: "Users" }));
+    expect(await screen.findByText("Alice")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Document Access" }));
+
+    const editor = screen.getByRole("form", { name: "Access for budget.md" }); // still open
+    expect(within(editor).getByLabelText("Only selected departments (and admins)")).toBeChecked();
+    expect(calls.filter((c) => c.path === "/api/v1/admin/documents/5/access")).toHaveLength(1); // not re-fetched
+    expect(adminCalls(calls).filter((c) => c.method !== "GET")).toHaveLength(0); // switching tabs changes nothing
+  });
+
   it("a stored token for an employee restores no admin section", async () => {
     window.localStorage.setItem(STORAGE_KEY, TOKEN);
     mockAdmin(adminBackend(USER));
@@ -173,9 +278,11 @@ describe("departments", () => {
     const calls = mockAdmin(backend);
     render(<App />);
     const user = await openAdmin();
-    vi.spyOn(window, "confirm").mockReturnValue(true);
 
+    await user.click(screen.getByRole("button", { name: "New department" }));
     await user.type(screen.getByLabelText("Name"), "Human Resources");
+    expect(screen.getByLabelText("Slug")).toHaveValue("human-resources"); // suggested from the name
+    await user.clear(screen.getByLabelText("Slug"));
     await user.type(screen.getByLabelText("Slug"), "hr");
     await user.click(screen.getByRole("button", { name: "Create department" }));
     expect(await screen.findByText("Created Human Resources.")).toBeInTheDocument();
@@ -191,7 +298,12 @@ describe("departments", () => {
     expect(await screen.findByRole("cell", { name: "Legal & Compliance" })).toBeInTheDocument();
     expect(calls.find((c) => c.method === "PATCH")).toMatchObject({ path: "/api/v1/admin/departments/11", body: { name: "Legal & Compliance" } });
 
+    // Deleting asks first; Cancel keeps the department.
     await user.click(screen.getByRole("button", { name: "Delete Legal & Compliance" }));
+    await answerDialog(user, /Delete Legal & Compliance\?/, "Cancel");
+    expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(0);
+    await user.click(screen.getByRole("button", { name: "Delete Legal & Compliance" }));
+    await answerDialog(user, /Delete Legal & Compliance\?/, "Delete department");
     await waitFor(() => expect(screen.queryByRole("cell", { name: "Legal & Compliance" })).not.toBeInTheDocument());
     expect(calls.find((c) => c.method === "DELETE")!.path).toBe("/api/v1/admin/departments/11");
   });
@@ -200,13 +312,12 @@ describe("departments", () => {
     mockAdmin(adminBackend());
     render(<App />);
     const user = await openAdmin();
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     await user.click(await screen.findByRole("button", { name: "Delete Finance" }));
+    await answerDialog(user, /Delete Finance\?/, "Delete department");
     expect(await screen.findByRole("alert")).toHaveTextContent("assigned to 1 document(s)");
     expect(screen.getByRole("cell", { name: "Finance" })).toBeInTheDocument();
 
-    await user.type(screen.getByLabelText("Name"), "Money");
-    await user.type(screen.getByLabelText("Slug"), "finance");
+    await fillNewDepartment(user, "Money", "finance");
     await user.click(screen.getByRole("button", { name: "Create department" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("slug already exists");
   });
@@ -219,8 +330,7 @@ describe("departments", () => {
     });
     render(<App />);
     const user = await openAdmin();
-    await user.type(screen.getByLabelText("Name"), "Bad");
-    await user.type(screen.getByLabelText("Slug"), "Bad Slug");
+    await fillNewDepartment(user, "Bad", "Bad Slug");
     await user.click(screen.getByRole("button", { name: "Create department" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("slug: String should match pattern");
   });
@@ -250,12 +360,85 @@ describe("users", () => {
     expect(backend.state.users[1].department_ids).toEqual([11]);
   });
 
+  it("adds an employee with an initial password and departments", async () => {
+    const backend = adminBackend();
+    const calls = mockAdmin(backend);
+    render(<App />);
+    const user = await openAdmin("Users");
+    await screen.findByText("Alice");
+    await user.click(screen.getByRole("button", { name: "Add employee" }));
+    const form = screen.getByRole("form", { name: "Add employee" });
+    const password = within(form).getByLabelText("Initial password") as HTMLInputElement;
+    expect(password.value.length).toBeGreaterThanOrEqual(12); // a generated password is filled in
+    const generated = password.value;
+    await user.click(within(form).getByRole("button", { name: "Generate" }));
+    expect(password.value).not.toBe(generated);
+
+    await user.type(within(form).getByLabelText(/Full name/), "Ravi Kumar");
+    await user.type(within(form).getByLabelText("Work email"), "ravi@example.com");
+    await user.click(within(form).getByLabelText("Finance"));
+    await user.click(within(form).getByRole("button", { name: "Add employee" }));
+
+    expect(await screen.findByText(/Added Ravi Kumar\. They can now log in with ravi@example\.com/)).toBeInTheDocument();
+    const post = calls.find((c) => c.method === "POST" && c.path === "/api/v1/admin/users")!;
+    expect(post.body).toEqual({ email: "ravi@example.com", password: password.value, display_name: "Ravi Kumar",
+                                department_ids: [10] });
+    expect(JSON.stringify(post.body)).not.toMatch(/tenant|role|admin/i); // the server decides tenant and role
+    expect(screen.queryByRole("form", { name: "Add employee" })).not.toBeInTheDocument();
+    const row = (await screen.findByText("Ravi Kumar")).closest("tr")!;
+    expect(within(row).getByText("Finance")).toBeInTheDocument();
+    expect(within(row).getByLabelText("Role for Ravi Kumar")).toHaveValue("employee");
+  });
+
+  it("checks the password length before calling the API and shows a duplicate-email error", async () => {
+    const calls = mockAdmin(adminBackend());
+    render(<App />);
+    const user = await openAdmin("Users");
+    await screen.findByText("Alice");
+    await user.click(screen.getByRole("button", { name: "Add employee" }));
+    const form = screen.getByRole("form", { name: "Add employee" });
+    await user.type(within(form).getByLabelText("Work email"), "alice@example.com");
+    const password = within(form).getByLabelText("Initial password");
+    await user.clear(password);
+    await user.type(password, "short");
+    await user.click(within(form).getByRole("button", { name: "Add employee" }));
+    expect(within(form).getByRole("alert")).toHaveTextContent("at least 12 characters");
+    expect(calls.some((c) => c.method === "POST" && c.path === "/api/v1/admin/users")).toBe(false);
+
+    await user.type(password, "-long-enough-now");
+    await user.click(within(form).getByRole("button", { name: "Add employee" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("already exists");
+    expect(screen.getByRole("form", { name: "Add employee" })).toBeInTheDocument(); // stays open to fix the email
+  });
+
+  it("deletes a user after confirmation, never offers deleting yourself", async () => {
+    const backend = adminBackend();
+    const calls = mockAdmin(backend);
+    render(<App />);
+    const user = await openAdmin("Users");
+    const row = (await screen.findByText("Alice")).closest("tr")!;
+    const myRow = within(screen.getByRole("table")).getByText("Dev User").closest("tr")!;
+    expect(within(myRow).queryByRole("button", { name: /Delete/ })).not.toBeInTheDocument();
+
+    await user.click(within(row).getByRole("button", { name: "Delete Alice" }));
+    await answerDialog(user, /Delete Alice\?/, "Cancel");
+    expect(calls.some((c) => c.method === "DELETE" && c.path.startsWith("/api/v1/admin/users/"))).toBe(false);
+
+    await user.click(within(row).getByRole("button", { name: "Delete Alice" }));
+    await answerDialog(user, /Delete Alice\?/, "Delete user");
+    expect(await screen.findByText("Deleted Alice.")).toBeInTheDocument();
+    expect(calls.find((c) => c.method === "DELETE" && c.path === "/api/v1/admin/users/2")).toBeDefined();
+    await waitFor(() => expect(screen.queryByText("Alice")).not.toBeInTheDocument());
+    expect(backend.state.users.map((u) => u.id)).toEqual([1]);
+  });
+
   it("shows the last-admin refusal from the server", async () => {
     mockAdmin(adminBackend());
     render(<App />);
     const user = await openAdmin("Users");
     const row = within(await screen.findByRole("table")).getByText("Dev User").closest("tr")!;
     await user.selectOptions(within(row).getByLabelText("Role for Dev User"), "employee");
+    await answerDialog(user, /Remove your own admin access\?/, "Remove my admin access");
     expect(await screen.findByRole("alert")).toHaveTextContent("must keep at least one admin");
     expect(screen.getByRole("button", { name: "Admin" })).toBeInTheDocument();
   });
@@ -267,7 +450,14 @@ describe("users", () => {
     render(<App />);
     const user = await openAdmin("Users");
     const row = within(await screen.findByRole("table")).getByText("Dev User").closest("tr")!;
+    // Cancelling the warning changes nothing.
     await user.selectOptions(within(row).getByLabelText("Role for Dev User"), "employee");
+    await answerDialog(user, /Remove your own admin access\?/, "Cancel");
+    expect(calls.some((c) => c.path === "/api/v1/admin/users/1/role")).toBe(false);
+    expect(within(row).getByLabelText("Role for Dev User")).toHaveValue("admin");
+
+    await user.selectOptions(within(row).getByLabelText("Role for Dev User"), "employee");
+    await answerDialog(user, /Remove your own admin access\?/, "Remove my admin access");
     await waitFor(() => expect(screen.queryByRole("button", { name: "Admin" })).not.toBeInTheDocument());
     expect(screen.queryByRole("heading", { name: "Users" })).not.toBeInTheDocument();
     expect(calls.filter((c) => c.path === "/api/v1/auth/me").length).toBeGreaterThanOrEqual(2);
@@ -279,7 +469,7 @@ describe("document access", () => {
     const backend = adminBackend();
     const calls = mockAdmin(backend);
     render(<App />);
-    const user = await openAdmin("Document access");
+    const user = await openAdmin("Document Access");
     await user.click(await screen.findByRole("button", { name: "Manage access for budget.md" }));
     const editor = await screen.findByRole("form", { name: "Access for budget.md" });
     expect(within(editor).getByLabelText("Everyone in the company")).toBeChecked();
@@ -305,7 +495,7 @@ describe("document access", () => {
     delete backend.state.access[5];
     mockAdmin(backend);
     render(<App />);
-    const user = await openAdmin("Document access");
+    const user = await openAdmin("Document Access");
     await user.click(await screen.findByRole("button", { name: "Manage access for budget.md" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Document not found.");
   });
@@ -320,8 +510,7 @@ describe("403 from an admin endpoint", () => {
     expect(await screen.findByRole("cell", { name: "Finance" })).toBeInTheDocument();
 
     backend.state.me = { ...ADMIN_USER, role: "employee" }; // demoted elsewhere; this UI still shows admin
-    await user.type(screen.getByLabelText("Name"), "Ops");
-    await user.type(screen.getByLabelText("Slug"), "ops");
+    await fillNewDepartment(user, "Ops"); // slug suggested: "ops"
     await user.click(screen.getByRole("button", { name: "Create department" }));
 
     // The server refuses, the UI re-reads /auth/me and drops the admin section.
