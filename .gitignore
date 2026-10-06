@@ -11,10 +11,6 @@ __pycache__/
 /.env.*
 deploy/caddy.env
 
-# Generated development artifacts (keep the folder itself)
-data/processed/*
-!data/processed/.gitkeep
-
 # Files uploaded through the API (tenant data, never committed)
 data/uploads/
 

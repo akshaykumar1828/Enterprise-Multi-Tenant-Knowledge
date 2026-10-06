@@ -108,9 +108,8 @@ Before the two sample documents were removed (2026-10-03): `enterprise_rag-pre-s
   - Paths are logged without query strings.
   - Errors return a generic message to the client and the full traceback to the log only.
 - **Secrets:**
-  - `.env`, `.env.*`, `deploy/caddy.env`, `*.dump`, `backups/`, `/logs/`, `data/uploads/` (tenant uploads) and
-    `data/processed/*` are git-ignored. The benchmark folder corpus in `data/documents/` is tracked, and it is
-    synthetic data under the MIT licence.
+  - `.env`, `.env.*`, `docker/.env`, `deploy/caddy.env`, `*.dump`, `backups/`, `/logs/`, `data/uploads/` (tenant
+    uploads) and the document folder `data/documents/` are git-ignored, so company documents are never committed.
   - The backup tool scans each dump for secrets.
   - Tests sign tokens with a random key and never read the production `.env`.
 - **Models:** with `HF_HUB_OFFLINE=1` the models load from the local cache, so the Hugging Face Hub isn't contacted.
