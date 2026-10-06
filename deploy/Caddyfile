@@ -8,6 +8,7 @@
 #                  local certificate authority, for trying the setup locally.
 #   FRONTEND_DIST  absolute path to frontend/dist (the output of "npm run build")
 #   CADDY_LOG_DIR  folder for access logs (default: ./logs)
+#   API_UPSTREAM   where FastAPI listens (default 127.0.0.1:8000; "api:8000" in Docker)
 #   CADDY_ADMIN    Caddy's own admin API (config reload, "caddy stop"), loopback only.
 #                  Default localhost:2019; if Caddy fails with "listen tcp
 #                  127.0.0.1:2019 ... forbidden by its access permissions" (Windows can
@@ -42,7 +43,7 @@
 		request_body {
 			max_size 11MB
 		}
-		reverse_proxy 127.0.0.1:8000
+		reverse_proxy {$API_UPSTREAM:127.0.0.1:8000}
 	}
 
 	# Frontend: static files from the Vite build; unknown paths fall back to the app.

@@ -43,7 +43,8 @@ py -3.12 -m venv .venv
 cd frontend; npm install; npm test; npm run dev
 ```
 
-Production deployment is a separate procedure; see the documentation below.
+To run everything in containers instead (PostgreSQL, API and website; Ollama stays on the host), see
+[docker/README.md](docker/README.md). Production deployment on Windows is a separate procedure; see the documentation below.
 
 ## Documentation
 
@@ -55,7 +56,7 @@ Production deployment is a separate procedure; see the documentation below.
 | [deploy/DEPLOYMENT.md](deploy/DEPLOYMENT.md) | Production deployment, step by step |
 | [deploy/PRODUCTION_RUNBOOK.md](deploy/PRODUCTION_RUNBOOK.md) | Administrator steps: firewall, PostgreSQL, Caddy, startup tasks, HTTPS |
 | [deploy/BACKUP.md](deploy/BACKUP.md) | Backup, verification, recovery, scheduled backups |
-| [data/documents/enterprise_rag_bench/README.md](data/documents/enterprise_rag_bench/README.md) | The benchmark corpus (synthetic, MIT) |
+| [docker/README.md](docker/README.md) | Running with Docker, where the data lives, moving an installation in |
 
 ## Project layout
 
@@ -65,8 +66,9 @@ Production deployment is a separate procedure; see the documentation below.
 | `src/rag/` | RAG core, access filter, admin service, users and tenants, ingestion, uploads, backups, schema |
 | `frontend/` | React single-page app |
 | `deploy/` | Caddyfile, production env template, Windows task scripts, deployment and backup guides |
+| `docker/` | Dockerfiles, compose file and settings template |
 | `tests/` | Backend tests (run against a throwaway copy of the database) |
-| `data/documents/` | Folder corpus for the default tenant (1,222 documents) |
+| `data/documents/` | Folder corpus for the default tenant; private, not in the repository (see its README) |
 | `docs/` | Architecture, authorization and operations documentation |
 
 ## Status (2026-10-01)

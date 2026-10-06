@@ -16,9 +16,16 @@ This generates a random password, creates or updates the role, grants
 privileges, and writes APP_DB_USER / APP_DB_PASSWORD into .env without
 printing the password. Re-apply grants after adding tables with:
     .venv\\Scripts\\python.exe -m src.rag.db_roles grant --role rag_app
+
+In containers the password comes from the environment instead (APP_DB_PASSWORD, at
+least 16 characters) and nothing is written to disk:
+    python -m src.rag.db_roles ensure-app-role --role rag_app
+This is safe to run on every start: it migrates the schema, sets the role's password and
+re-applies the grants.
 """
 
 import argparse
+import os
 import re
 import secrets
 import sys
@@ -107,7 +114,15 @@ def main() -> int:
     create.add_argument("--env-file", type=Path, default=Path(".env"))
     grant = commands.add_parser("grant", help="re-apply privileges (e.g. after a migration added tables)")
     grant.add_argument("--role", default="rag_app")
+    ensure = commands.add_parser("ensure-app-role",
+                                 help="create/update the role with APP_DB_PASSWORD from the environment, grant privileges")
+    ensure.add_argument("--role", default="rag_app")
     args = parser.parse_args()
+
+    env_password = os.environ.get("APP_DB_PASSWORD", "")
+    if args.command == "ensure-app-role" and len(env_password) < 16:
+        print("Error: APP_DB_PASSWORD must be set to at least 16 characters.", file=sys.stderr)
+        return 1
 
     load_dotenv(Path(__file__).resolve().parents[2] / ".env")
     try:
@@ -122,6 +137,10 @@ def main() -> int:
                 grant_app_privileges(conn, args.role)
                 write_env_values(args.env_file, {"APP_DB_USER": args.role, "APP_DB_PASSWORD": password})
                 print(f"Role {args.role!r} ready; APP_DB_USER and APP_DB_PASSWORD written to {args.env_file} (not shown).")
+            elif args.command == "ensure-app-role":
+                create_or_update_app_role(conn, args.role, env_password)
+                grant_app_privileges(conn, args.role)
+                print(f"Schema up to date; role {args.role!r} ready.")
             else:
                 grant_app_privileges(conn, args.role)
                 print(f"Privileges re-applied for role {args.role!r}.")

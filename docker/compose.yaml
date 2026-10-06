@@ -1,0 +1,81 @@
+# Run from this folder:  docker compose up -d --build
+# Settings come from docker/.env (copy .env.example). See docker/README.md.
+name: redwood-knowledge
+
+services:
+  db:
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_DB: enterprise_rag
+      POSTGRES_USER: ${PG_OWNER_USER:-rag_owner}
+      POSTGRES_PASSWORD: ${PG_OWNER_PASSWORD:?set PG_OWNER_PASSWORD in docker/.env}
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d enterprise_rag"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    # Not published: only the containers on this network can reach it.
+
+  # One-shot, as the owner: migrate the schema, set the app role's password, re-grant.
+  migrate:
+    build: { context: .., dockerfile: docker/api.Dockerfile }
+    image: redwood-knowledge/api
+    command: ["python", "-m", "src.rag.db_roles", "ensure-app-role", "--role", "rag_app"]
+    environment:
+      PGHOST: db
+      PGDATABASE: enterprise_rag
+      PGUSER: ${PG_OWNER_USER:-rag_owner}
+      PGPASSWORD: ${PG_OWNER_PASSWORD}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in docker/.env}
+    depends_on:
+      db: { condition: service_healthy }
+    restart: "no"
+
+  api:
+    image: redwood-knowledge/api
+    environment:
+      # Least-privilege role only; the owner credentials never reach this container.
+      PGHOST: db
+      PGDATABASE: enterprise_rag
+      APP_DB_USER: rag_app
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?set JWT_SECRET_KEY in docker/.env}
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-gemma3:4b-it-q4_K_M}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      REGISTRATION_MODE: closed
+      RATE_LIMIT_ANSWERS: "off"
+      LOG_FORMAT: json
+    volumes:
+      - uploads:/data/uploads
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=5)"]
+      interval: 15s
+      timeout: 10s
+      start_period: 120s
+      retries: 5
+    restart: unless-stopped
+
+  web:
+    build: { context: .., dockerfile: docker/web.Dockerfile }
+    image: redwood-knowledge/web
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8180}:80"
+    volumes:
+      - caddy:/data
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  uploads:
+  caddy:

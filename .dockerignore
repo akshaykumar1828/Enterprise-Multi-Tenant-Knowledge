@@ -1,0 +1,22 @@
+# Keep secrets, private data and local build output out of every image.
+.env
+.env.*
+**/.env
+docker/.env
+.git
+.claude
+.venv
+.vscode
+.idea
+**/__pycache__
+*.pyc
+.pytest_cache
+
+data
+backups
+*.dump
+logs
+
+frontend/node_modules
+frontend/dist
+frontend/.env*
