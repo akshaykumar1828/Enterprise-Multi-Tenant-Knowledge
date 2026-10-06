@@ -4,7 +4,6 @@
 **/.env
 docker/.env
 .git
-.claude
 .venv
 .vscode
 .idea
