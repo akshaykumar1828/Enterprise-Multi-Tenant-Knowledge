@@ -18,7 +18,7 @@ Browser ──HTTPS──► Caddy (deploy/Caddyfile)
 
 | Component | Code | Role |
 |---|---|---|
-| Frontend | `frontend/src` | Login and registration, chat with sources and citations, document list and upload, admin panel (departments, users, document access). Keeps the access token in `localStorage`, so it survives a page reload. |
+| Frontend | `frontend/src` | Login (no public sign-up: admins add employees), change password, chat with sources and citations, document list and upload, admin panel (departments, users, document access). Keeps the access token in `localStorage`, so it survives a page reload. |
 | API | `src/api` | FastAPI app: `auth.py` (login, `/me`), `documents.py` (list, upload, delete), `admin.py` (Admin API), `main.py` (`/query`, `/health`, middleware), `settings.py` (production settings checks), `rate_limit.py` (rate limits stored in PostgreSQL). |
 | RAG core | `src/rag` | Loading, chunking, embeddings, ingestion, retrieval, reranking, LLM prompt and citations, access filter, users and tenants, the admin service, backups. |
 | Database | `src/rag/schema.sql` | Tables `tenants`, `users`, `departments`, `user_departments`, `documents`, `document_departments`, `document_chunks` (with the `vector(384)` embedding and a full-text `tsvector`), and `rate_limits`. |
