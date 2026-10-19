@@ -157,8 +157,8 @@ class EndToEndAuthorizationTests(unittest.TestCase):
         cls.real_reranker = cls.pipeline.reranker
         cls.spy = SpyReranker(cls.real_reranker)
         cls.pipeline.reranker = cls.spy
-        cls.real_client = cls.pipeline.gemini_client
-        cls.pipeline.gemini_client = cls.real_client or object()
+        cls.real_client = cls.pipeline.chat_model
+        cls.pipeline.chat_model = cls.real_client or object()
         cls.llm_contexts = []
 
         def fake_llm(client, question, sources):
@@ -169,7 +169,7 @@ class EndToEndAuthorizationTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.pipeline.reranker = cls.real_reranker
-        cls.pipeline.generate, cls.pipeline.gemini_client = generate_answer, cls.real_client
+        cls.pipeline.generate, cls.pipeline.chat_model = generate_answer, cls.real_client
         ids = [cls.tenant, cls.other]
         cls.conn.execute("DELETE FROM documents WHERE tenant_id = ANY(%s)", (ids,))
         cls.conn.execute("DELETE FROM tenants WHERE id = ANY(%s)", (ids,))  # users, departments, links cascade

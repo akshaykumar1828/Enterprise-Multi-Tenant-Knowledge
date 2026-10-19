@@ -89,12 +89,12 @@ class AuthTests(unittest.TestCase):
         cls.client_context.__exit__(None, None, None)
 
     def setUp(self):
-        self.real_generate, self.real_client = self.pipeline.generate, self.pipeline.gemini_client
+        self.real_generate, self.real_client = self.pipeline.generate, self.pipeline.chat_model
         self.pipeline.generate = lambda client, question, sources: "unused"  # never a real Gemini call
-        self.pipeline.gemini_client = self.real_client or object()
+        self.pipeline.chat_model = self.real_client or object()
 
     def tearDown(self):
-        self.pipeline.generate, self.pipeline.gemini_client = generate_answer, self.real_client
+        self.pipeline.generate, self.pipeline.chat_model = generate_answer, self.real_client
 
     def query(self, token_value, **body):
         return self.client.post(QUERY, json={"retrieve_only": True, **body}, headers=bearer(token_value))

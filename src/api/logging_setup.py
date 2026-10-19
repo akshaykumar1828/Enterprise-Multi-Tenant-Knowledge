@@ -32,8 +32,8 @@ _REDACTIONS = [
 # Fields a request log line may carry (passed with `extra=`).
 REQUEST_FIELDS = ("method", "path", "status", "duration_ms", "client_ip")
 _HANDLER_MARK = "_rag_app_handler"
-QUIET_LIBRARIES = ("httpx", "httpcore", "urllib3", "huggingface_hub", "sentence_transformers", "transformers",
-                   "google_genai", "psycopg.pool")
+QUIET_LIBRARIES = ("httpx", "httpx2", "httpcore", "urllib3", "huggingface_hub", "sentence_transformers",
+                   "transformers", "google_genai", "psycopg.pool")
 
 
 def redact(text: str) -> str:

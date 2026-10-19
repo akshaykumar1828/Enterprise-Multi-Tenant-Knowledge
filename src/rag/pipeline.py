@@ -1,7 +1,9 @@
 """The RAG pipeline as a reusable service (used by the API).
 
-It composes the existing pieces without changing them:
-    RerankingRetriever -> generate_answer (Gemini) -> check_citations
+It composes the pieces with LangChain where LangChain fits:
+    AccessScopedRetriever (LangChain retriever over our access-filtered SQL search + reranker)
+      -> answer chain (LangChain: prompt | chat model | parser)
+      -> check_citations (ours: invalid [n] are removed; sources come from retrieval, not the model)
 
 Models are loaded once and reused. Each call opens its own short-lived
 database connection, and the service only reads from the database: documents
@@ -16,7 +18,6 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from google import genai
 from pgvector.psycopg import register_vector
 
 from .access import AccessScope
@@ -24,13 +25,14 @@ from .citations import check_citations
 from .db import connect_app
 from .embeddings import MODEL_NAME as EMBEDDING_MODEL_NAME
 from .embeddings import load_model
+from .lc_retriever import AccessScopedRetriever, to_results
 from .llm import LLMError, create_client, generate_answer
 from .llm import model_name as llm_model_name
 from .retriever import RERANKER_MODEL, RerankingRetriever, SearchResult, load_reranker
 
 
 class GenerationUnavailable(RuntimeError):
-    """Answer generation is not configured (for example GEMINI_API_KEY is missing)."""
+    """Answer generation is not configured (for example LLM_PROVIDER=gemini without GEMINI_API_KEY)."""
 
 
 class CorpusEmpty(RuntimeError):
@@ -40,7 +42,7 @@ class CorpusEmpty(RuntimeError):
 @dataclass
 class PipelineResult:
     question: str
-    sources: list[SearchResult]  # numbered 1..N in this order, exactly as sent to Gemini
+    sources: list[SearchResult]  # numbered 1..N in this order, exactly as sent to the model
     answer: str | None = None  # None when only retrieval was requested
     cited: list[int] = field(default_factory=list)  # valid [n] used in the answer
     removed_citations: list[int] = field(default_factory=list)  # [n] that matched no source
@@ -57,16 +59,17 @@ class RAGPipeline:
         self.embedding_model = load_model()
         self.reranker = load_reranker()
         try:
-            self.gemini_client: genai.Client | None = create_client()
-            self.gemini_error: str | None = None
+            # A LangChain chat model: ChatOllama (default) or ChatGoogleGenerativeAI.
+            self.chat_model = create_client()
+            self.llm_error: str | None = None
         except LLMError as error:
-            self.gemini_client, self.gemini_error = None, str(error)
+            self.chat_model, self.llm_error = None, str(error)
         # The configured answer model (local Ollama model by default, or Gemini).
         self.llm_model_name = llm_model_name()
-        # Kept as an attribute so tests can substitute a fake and spend no Gemini quota.
+        # Kept as an attribute so tests can substitute a fake and call no real model.
         self.generate = generate_answer
         # One request at a time on the GPU models (search and upload embedding);
-        # Gemini calls run outside this lock.
+        # model calls run outside this lock.
         self.model_lock = threading.Lock()
 
     # --- descriptive info -------------------------------------------------
@@ -102,20 +105,24 @@ class RAGPipeline:
             with self.model_lock:
                 return retriever.search(question, top_k=top_k)
 
+    def retriever(self, scope: AccessScope, top_k: int = 3) -> AccessScopedRetriever:
+        """A LangChain retriever bound to one caller's scope."""
+        return AccessScopedRetriever(pipeline=self, scope=scope, top_k=top_k)
+
     def answer(
         self, question: str, top_k: int = 3, retrieve_only: bool = False, *, scope: AccessScope
     ) -> PipelineResult:
         started = time.perf_counter()
-        sources = self.retrieve(question, top_k, scope=scope)
+        sources = to_results(self.retriever(scope, top_k).invoke(question))
         result = PipelineResult(question=question, sources=sources,
                                 retrieval_ms=(time.perf_counter() - started) * 1000)
         if retrieve_only:
             return result
 
-        if self.gemini_client is None:
-            raise GenerationUnavailable(self.gemini_error or "Gemini client is not configured")
+        if self.chat_model is None:
+            raise GenerationUnavailable(self.llm_error or "No answer model is configured")
         started = time.perf_counter()
-        raw_answer = self.generate(self.gemini_client, question, sources)
+        raw_answer = self.generate(self.chat_model, question, sources)
         result.generation_ms = (time.perf_counter() - started) * 1000
 
         checked = check_citations(raw_answer, len(sources))

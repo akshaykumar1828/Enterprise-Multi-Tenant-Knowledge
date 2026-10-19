@@ -4,7 +4,7 @@ A private, self-hosted assistant that answers employees' questions from their co
 citations, and **only from the documents each person is allowed to read**.
 
 It is a retrieval-augmented generation (RAG) application:
-- **Backend:** FastAPI;
+- **Backend:** FastAPI, with the RAG flow orchestrated by LangChain;
 - **Search:** PostgreSQL with pgvector, plus a cross-encoder reranker;
 - **Answers:** a local LLM served by Ollama, so document text never leaves your server;
 - **Frontend:** React.
@@ -60,6 +60,8 @@ third-party API.
   document and section title.
 - Two-stage search: vector search with `all-MiniLM-L6-v2` (top 50), then the `ms-marco-MiniLM-L6-v2`
   cross-encoder reranks the results, with at most 2 passages per document so one long file can't crowd out the rest.
+- LangChain orchestration: a custom `BaseRetriever` wraps the access-filtered search, and an LCEL chain
+  (`ChatPromptTemplate | ChatOllama | StrOutputParser`) writes the answer. Switching to Gemini is a one-setting change.
 
 **Access control by role and department**
 - Roles: `admin` and `employee`. Departments, for example Engineering, Finance and HR.
@@ -77,7 +79,7 @@ third-party API.
 - A least-privilege database role for the API, rate limits, strict security headers (CSP, HSTS), upload size and
   page limits, and startup safety checks.
 - Verified backups (dump → restore into a scratch database → compare).
-- 252 backend tests, which run against a throwaway copy of the database, and 59 frontend tests.
+- 259 backend tests, which run against a throwaway copy of the database, and 59 frontend tests.
 
 ## How it works
 
@@ -215,7 +217,7 @@ A step-by-step guide for employees and administrators: [docs/USER_GUIDE.md](docs
 ## Testing
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"     # 252 backend tests
+.\.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"     # 259 backend tests
 cd frontend; npm test                                                       # 59 frontend tests
 ```
 
@@ -253,5 +255,5 @@ cd frontend; npm test                                                       # 59
 
 ## Tech stack
 
-Python 3.12 · FastAPI · PostgreSQL 18 + pgvector · psycopg 3 · sentence-transformers (PyTorch) · Ollama (gemma3) ·
+Python 3.12 · FastAPI · LangChain · PostgreSQL 18 + pgvector · psycopg 3 · sentence-transformers (PyTorch) · Ollama (gemma3) ·
 Google GenAI SDK (optional) · React 19 + Vite + TypeScript · Vitest · Caddy · Docker Compose

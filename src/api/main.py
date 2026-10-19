@@ -90,7 +90,7 @@ async def lifespan(app: FastAPI):
         if is_production():
             # Load the local answer model in the background so the first question doesn't wait for it.
             # Startup never waits on it, and a missing Ollama only means the first answer loads the model.
-            threading.Thread(target=warm_up, args=(app.state.pipeline.gemini_client,), daemon=True,
+            threading.Thread(target=warm_up, args=(app.state.pipeline.chat_model,), daemon=True,
                              name="ollama-warm-up").start()
         yield
     finally:
@@ -377,7 +377,7 @@ def health(request: Request):
     """ok: everything works | degraded: database fine, AI answers unavailable (sources-only
     still works) | unavailable (503): the database cannot be reached, nothing can be served."""
     pipeline = get_pipeline(request)
-    llm_configured = pipeline.gemini_client is not None
+    llm_configured = pipeline.chat_model is not None
 
     if is_production():
         # Public health output: only the state. No corpus sizes (they span tenants),

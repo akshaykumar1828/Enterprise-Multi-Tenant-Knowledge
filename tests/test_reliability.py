@@ -40,7 +40,7 @@ class ApiReliabilityTests(unittest.TestCase):
         cls.client_context = TestClient(api_main.app)
         cls.client = cls.client_context.__enter__()
         cls.pipeline = api_main.app.state.pipeline
-        cls.real_gemini = cls.pipeline.gemini_client
+        cls.real_gemini = cls.pipeline.chat_model
         with connect() as conn:
             cls.user, password = make_user(conn, get_tenant(conn, DEFAULT_TENANT).id, "reliability")
         cls.password = password
@@ -56,7 +56,7 @@ class ApiReliabilityTests(unittest.TestCase):
         self.pipeline.generate = lambda client, question, sources: "unused"  # never a real Gemini call
 
     def tearDown(self):
-        self.pipeline.generate, self.pipeline.gemini_client = generate_answer, self.real_gemini
+        self.pipeline.generate, self.pipeline.chat_model = generate_answer, self.real_gemini
 
     # --- pool and timeouts ------------------------------------------------------------
     def test_pool_is_open_with_conservative_defaults(self):
@@ -168,10 +168,10 @@ class ApiReliabilityTests(unittest.TestCase):
     # --- health ----------------------------------------------------------------------------
     def test_production_health_is_minimal_with_three_states(self):
         with mock.patch.dict(os.environ, {"APP_ENV": "production"}):
-            self.pipeline.gemini_client = object()
+            self.pipeline.chat_model = object()
             response = self.client.get("/api/v1/health")
             self.assertEqual((response.status_code, response.json()), (200, {"status": "ok"}))
-            self.pipeline.gemini_client = None
+            self.pipeline.chat_model = None
             response = self.client.get("/api/v1/health")
             self.assertEqual((response.status_code, response.json()), (200, {"status": "degraded"}))
             with mock.patch.object(api_main, "connect_app", side_effect=psycopg.OperationalError("down")):

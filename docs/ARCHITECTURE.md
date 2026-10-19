@@ -66,7 +66,20 @@ schema itself refuses any link that crosses tenants.
     text-character limit and a chunk limit, plus per-tenant document and storage quotas. Duplicates are detected
     within the caller's scope.
 
-### Retrieval and answer (`src/rag/pipeline.py`, `retriever.py`, `llm.py`, `citations.py`)
+### Retrieval and answer (`src/rag/pipeline.py`, `lc_retriever.py`, `retriever.py`, `llm.py`, `citations.py`)
+
+LangChain orchestrates the flow; the parts that decide quality and security stay custom:
+
+```
+AccessScopedRetriever (LangChain BaseRetriever)      -> our SQL search with the access filter, reranker, diversity
+  -> ANSWER_PROMPT | chat model | StrOutputParser   (LangChain LCEL chain; ChatOllama or ChatGoogleGenerativeAI)
+  -> check_citations                                (ours)
+```
+
+LangChain's `PGVector` store is not used: its metadata filters can't express "documents shared with one of this user's
+departments" as a join, so authorization would have to happen after retrieval. Chunking and contextual embeddings
+are also our own, so the stored embeddings didn't change. The switch to LangChain was verified on 21 question/role
+cases: the retrieved passages, the exact messages sent to the model and the final answers were identical.
 
 1. **Embed the question** with the same model.
 2. **Vector search in PostgreSQL**, top 50 candidates by cosine distance. The **access filter is part of the same SQL
@@ -76,7 +89,8 @@ schema itself refuses any link that crosses tenants.
 4. **Diversify**, keeping at most 2 chunks per document, and take the top `top_k` (1–10, default 3).
 5. **Generate** the answer from the numbered sources only. By default this uses a local model through
    Ollama (`LLM_PROVIDER=ollama`, `OLLAMA_MODEL=gemma3:4b-it-q4_K_M`): free, unlimited, and the passages
-   never leave the server. `LLM_PROVIDER=gemini` uses Gemini (`gemini-3.8-flash`, free tier) instead.
+   never leave the server. `LLM_PROVIDER=gemini` uses Gemini (`gemini-3.8-flash`, free tier) instead, with
+   LangChain's automatic retries turned off so a failure never spends extra free-tier requests.
    `retrieve_only=true` skips this step.
 6. **Check citations.** Any `[n]` in the answer that doesn't match a retrieved source is removed and reported in
    `removed_citations`.

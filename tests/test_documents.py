@@ -83,11 +83,11 @@ class DocumentTests(unittest.TestCase):
 
     def setUp(self):
         self.pipeline.generate = lambda client, question, sources: "unused"  # never a real Gemini call
-        self.real_client = self.pipeline.gemini_client
-        self.pipeline.gemini_client = self.real_client or object()
+        self.real_client = self.pipeline.chat_model
+        self.pipeline.chat_model = self.real_client or object()
 
     def tearDown(self):
-        self.pipeline.generate, self.pipeline.gemini_client = generate_answer, self.real_client
+        self.pipeline.generate, self.pipeline.chat_model = generate_answer, self.real_client
         # The default tenant's corpus must be untouched by every test.
         self.assertEqual(self.counts(self.default.id), self.default_counts)
 

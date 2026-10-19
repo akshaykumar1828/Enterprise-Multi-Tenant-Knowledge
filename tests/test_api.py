@@ -38,7 +38,7 @@ class ApiTests(unittest.TestCase):
         cls.client_context = TestClient(app)
         cls.client = cls.client_context.__enter__()  # runs the lifespan: loads models once
         cls.pipeline = app.state.pipeline
-        cls.real_client = cls.pipeline.gemini_client
+        cls.real_client = cls.pipeline.chat_model
         ensure_sample_corpus(cls.pipeline.embedding_model)  # the handbook + PDF policy these tests ask about
         with connect() as conn:
             cls.user, password = make_user(conn, get_tenant(conn, DEFAULT_TENANT).id, "api-test")
@@ -53,11 +53,11 @@ class ApiTests(unittest.TestCase):
     def setUp(self):
         # Every test starts with generation faked, so no test can spend Gemini quota.
         self.pipeline.generate = lambda client, question, sources: "unused"
-        self.pipeline.gemini_client = self.real_client or object()
+        self.pipeline.chat_model = self.real_client or object()
 
     def tearDown(self):
         self.pipeline.generate = generate_answer
-        self.pipeline.gemini_client = self.real_client
+        self.pipeline.chat_model = self.real_client
 
     # --- health ---------------------------------------------------------------
     def test_health(self):
@@ -136,7 +136,7 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.json()["error"]["code"], "llm_error")
 
     def test_missing_gemini_key_becomes_503_but_retrieve_only_still_works(self):
-        self.pipeline.gemini_client = None
+        self.pipeline.chat_model = None
         response = self.client.post(QUERY, json={"question": HANDBOOK_QUESTION})
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["error"]["code"], "llm_not_configured")

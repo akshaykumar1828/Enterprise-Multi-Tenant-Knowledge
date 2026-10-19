@@ -141,14 +141,14 @@ class LimitApiTests(unittest.TestCase):
         shutil.rmtree(cls.sandbox, ignore_errors=True)
 
     def setUp(self):
-        self.real_client = self.pipeline.gemini_client
+        self.real_client = self.pipeline.chat_model
         self.pipeline.generate = lambda client, question, sources: "An answer [1]."  # never a real Gemini call
-        self.pipeline.gemini_client = self.real_client or object()
+        self.pipeline.chat_model = self.real_client or object()
         self.clear_ip_buckets()
         self.clear_tenant_buckets()
 
     def tearDown(self):
-        self.pipeline.generate, self.pipeline.gemini_client = generate_answer, self.real_client
+        self.pipeline.generate, self.pipeline.chat_model = generate_answer, self.real_client
 
     # --- helpers ------------------------------------------------------------------
     @classmethod
