@@ -7,9 +7,23 @@ administrator procedures are in [deploy/DEPLOYMENT.md](../deploy/DEPLOYMENT.md),
 > No secret values appear in this repository's docs. Real values live only in the production `.env` (never
 > committed) and the PostgreSQL password file of the account that runs backups.
 
-## Production deployment
+## Running the site
 
-Everything runs on a single Windows machine.
+There are two ways to run it. **Docker is the current one**; the Windows services are the original single-machine
+production setup.
+
+### Docker (current)
+
+Four containers from `docker/compose.yaml`: `db` (PostgreSQL 18 + pgvector), `migrate` (schema and the `rag_app`
+role, then exits), `api` (FastAPI) and `web` (Caddy), on `http://localhost:8180`. They start only by hand
+(`cd docker; docker compose up -d`) and keep their data in the `pgdata` and `uploads` volumes. Ollama runs on the
+host and keeps the GPU. Setup, migration of an existing database and everyday commands are in
+[docker/README.md](../docker/README.md).
+
+### Windows services (alternative)
+
+Everything runs directly on a single Windows machine. On the development machine these tasks are now disabled in
+favor of Docker; re-enable them with `Enable-ScheduledTask` (administrator) to use this setup again.
 
 | Service | Listens on | Started by |
 |---|---|---|
@@ -47,8 +61,8 @@ The production `.env` deliberately contains **no** database-owner credentials.
 - the database role is a superuser, can create roles or databases, or owns any application table.
 
 Access changes need **no restart**: every request reloads the caller's scope from the database. A change to code or
-`.env` needs the API task restarted:
-`Stop-ScheduledTask` / `Start-ScheduledTask -TaskPath "\EnterpriseRAG\" -TaskName "RAG API"`.
+settings needs the API restarted: `docker compose up -d --build` for Docker, or
+`Stop-ScheduledTask` / `Start-ScheduledTask -TaskPath "\EnterpriseRAG\" -TaskName "RAG API"` for the Windows setup.
 
 ## Backup and restore
 
@@ -119,8 +133,8 @@ Before the two sample documents were removed (2026-10-03): `enterprise_rag-pre-s
 **Strategy.** Backend tests never touch production data:
 - `tests/isolated_db.py` dumps the live database read-only and restores it into a throwaway `<db>_testrun_<hex>` copy.
 - In the copy it keeps only the default tenant's folder corpus, removes users, departments, links, uploads and other
-  tenants, and resets every document's visibility to `company`. That last step is the change committed in `1992fbf`;
-  it keeps the starting point independent of production's access state.
+  tenants, and resets every document's visibility to `company`. That last step keeps the starting point independent
+  of production's access state.
 - Each run gets a throwaway database role, and both the copy and the role are dropped at exit.
 - Settings come from `RAG_TEST_ENV_FILE`, `.env.test` or `.env.development`. A file containing `APP_ENV=production`
   is always skipped.
@@ -136,13 +150,16 @@ Before the two sample documents were removed (2026-10-03): `enterprise_rag-pre-s
 - production startup checks;
 - backup and restore, and scheduled backups;
 - the Windows startup tasks;
+- the LangChain layer: the retriever adapter, the prompt template, `ChatOllama` against a fake Ollama server (streamed
+  replies, missing model, server errors, unreachable server), and Gemini errors passing through unwrapped;
 - end-to-end authorization, where a reranker spy and an LLM recorder show exactly which chunks reach each stage.
 
-| Suite | Command | Result (2026-10-01) |
+| Suite | Command | Result |
 |---|---|---|
-| Backend (218 tests) | `.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"` | **OK.** Before the rollout: 218 passed in 304 s. After the rollout: 218 passed in 323 s. |
-| Frontend (4 files, 39 tests) | `cd frontend; npm test` | **39 passed** |
-| Production authorization smoke test (rollout) | in-process production app; temporary Engineering and Finance employees plus the admin; no Gemini calls | Document totals were correct (admin 1,224, Engineering 715, Finance 72). Every allowed document was retrieved and every disallowed one was not. Sources, citations and LLM context were authorized in all 15 queries. The one harness false positive is explained below. |
+| Backend (259 tests) | `.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"` | **OK**, 259 passed in about 420 s (2026-10-20) |
+| Frontend (4 files, 59 tests) | `cd frontend; npm test` | **59 passed** (2026-10-20) |
+| LangChain equivalence (2026-10-20) | 7 questions × 3 roles (admin, Engineering employee, Finance employee), old code vs LangChain code, model replaced by a recording fake | **Identical in 21/21 cases:** retrieved passages and scores, the exact messages and options sent to the model, and the final answers and citations. A real answer through the Docker site was also checked. |
+| Production authorization smoke test (rollout, 2026-10-01) | in-process production app; temporary Engineering and Finance employees plus the admin; no Gemini calls | Document totals were correct (admin 1,224, Engineering 715, Finance 72). Every allowed document was retrieved and every disallowed one was not. Sources, citations and LLM context were authorized in all 15 queries. The one harness false positive is explained below. |
 
 **The false positive.** It came from matching chunks by text: the heading `## Escalation paths` appears in both an
 Engineering document and a document Finance may read. The harness now traces each reranker candidate and LLM source
@@ -157,7 +174,7 @@ Run these from the project root in PowerShell. `python` means `.venv\Scripts\pyt
 |---|---|
 | Ingest or refresh the folder corpus (default tenant) | `python -m src.rag.ingest` |
 | Ingest another tenant's folder | `python -m src.rag.ingest --tenant <slug> --documents-dir <folder> --create-tenant` |
-| Ask from the CLI without Gemini (operator scope) | `python -m src.rag "<question>" --retrieve-only` |
+| Ask from the CLI without a model (operator scope) | `python -m src.rag "<question>" --retrieve-only` |
 | Rename the company (shown in the sidebar; slug stays `default`) | `python -m src.rag.tenants rename --name "Redwood Inference"` |
 | Create a user | `python -m src.rag.users create --tenant default --email <email>` |
 | Reset a password | `python -m src.rag.users set-password --email <email>` |
@@ -186,29 +203,22 @@ Make authorization changes through the Admin API or the admin panel, never with 
 The site serves one company, Redwood Inference (tenant slug `default`). The web app has no sign-up page: admins add
 employees in Admin → Users, and everyone changes their own password from the user menu.
 
-## Git checkpoint
-
-| Commit | Summary |
-|---|---|
-| `1992fbf` | Checkpoint: complete production authorization rollout (test isolation resets document visibility) |
-| `b26baad` | Checkpoint: isolate backend tests from production database |
-| `bb3056d` | Checkpoint: update Gemini model integration |
-| `e643e49` | Checkpoint: harden Caddy startup reliability |
-| `03d6c8b` | Checkpoint: fix production startup tasks |
-| `49beeec` | Checkpoint: add scheduled database backups |
-
 ## Open items
 
 - **Pending review:** 16 documents are held admin-only until a human decides; see
   [AUTHORIZATION.md](AUTHORIZATION.md#pending-review-16).
 - **Memberships:** assign employees to departments as they are onboarded (Admin → Users, or when adding them).
-- **Answer model:** written answers come from the local Ollama model `gemma3:4b` (free, unlimited; about 10–15 s
-  per answer on the RTX 3050). Ollama starts with the Windows user session, so it must be running for written
-  answers; sources-only always works. Set `RATE_LIMIT_ANSWERS=off` in the production `.env`. The API loads the
-  model in the background at startup, and each answer keeps it loaded for 30 minutes (`OLLAMA_KEEP_ALIVE`, for example
-  `2h` or `-1` for always). The first answer after a longer break still takes about a minute to reload it.
-- **Gemini (optional):** `LLM_PROVIDER=gemini` uses `gemini-3.8-flash` (free tier, about 20 answers a day). An end-to-end generated answer
-  hasn't been confirmed since the model change, because earlier attempts returned 503 (high demand). Retrieval-only
-  queries are unaffected.
+- **Answer model:** written answers come from the local Ollama model `gemma3:4b` through LangChain's `ChatOllama`
+  (free, unlimited; about 5–20 s per answer on the RTX 3050). Ollama runs on the host, also for Docker, and must be
+  running for written answers; sources-only always works. `RATE_LIMIT_ANSWERS=off` suits the local model. The API
+  loads the model in the background at startup, and each answer keeps it loaded for 30 minutes (`OLLAMA_KEEP_ALIVE`,
+  for example `2h` or `-1` for always). The first answer after a longer break still takes about a minute to reload it.
+- **Port 5432 clash with WSL:** a PostgreSQL inside the Ubuntu WSL distribution also listens on `localhost:5432`. When
+  it runs, connections reach it instead of the Windows service and fail with "password authentication failed".
+  Stop it (`wsl --terminate Ubuntu-24.04`) and start `postgresql-x64-18`, or move one of the two to another port.
+- **Gemini (optional):** `LLM_PROVIDER=gemini` uses `gemini-3.8-flash` through LangChain's `ChatGoogleGenerativeAI`
+  (free tier, about 20 answers a day; automatic retries are off so failures don't spend extra quota). An end-to-end
+  generated answer hasn't been confirmed since the model change, because earlier attempts returned 503 (high demand).
+  Retrieval-only queries are unaffected.
 - **Going public:** HTTPS on a public domain and opening the firewall for 80/443 are runbook step 6. Do them only
   when the site goes public.

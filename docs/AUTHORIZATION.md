@@ -1,7 +1,7 @@
 # Authentication and authorization
 
 This page covers who can sign in, who can read which document, and the authorization state currently in production.
-It reflects the rollout completed on **2026-10-01** (git checkpoint `1992fbf`).
+It reflects the rollout completed on **2026-10-01**.
 
 ## Authentication
 
